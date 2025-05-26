@@ -321,7 +321,6 @@ class TrajectoryGenerator:
         if self.is_mower:
             for i in range(len(z_k)):
                 self.lambda_values[i] = self.bayes(self.lambda_values[i], z_k[i])
-                self.lambda_values = self.bayes(self.lambda_values, z_k)
         elif self.idx is not None:
             self.lambda_values[self.idx] = self.bayes(self.lambda_values[self.idx], z_k[self.idx])
             # When the lambda value reaches a threshold, clear the event to stop observation.
@@ -864,12 +863,12 @@ class TrajectoryGenerator:
 if __name__ == '__main__':
     try:
         # Initialize and run the trajectory generator
-        modes = ['greedy', 'linear', 'mower']
+        modes = ['linear']
         for mode in modes:
-            for test_num in range(0, 2):
+            for test_num in range(0, 1):
                 import re
                 # Define base folder
-                base_test_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"batch_test_100trees_{mode}_gt")
+                base_test_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"batch_test_plot_traj_{mode}_gt")
                 os.makedirs(base_test_folder, exist_ok=True)
 
                 # Find the next test number

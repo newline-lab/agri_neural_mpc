@@ -17,3 +17,4 @@ unity_exec/*
 *.eps
 unity_app/*
 *_exec*/*
+ros/ros.env

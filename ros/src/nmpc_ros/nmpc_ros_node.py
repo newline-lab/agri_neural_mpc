@@ -7,7 +7,7 @@ if __name__ == '__main__':
     N_tests = 1
     for test_num in range(0,N_tests):
         # Base folder to store all test run outputs.
-        base_test_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "batch_test_100_trees_nmpc_05_25")
+        base_test_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_plot_traj_nmpc")
         os.makedirs(base_test_folder, exist_ok=True)
 
         # Find the next test number

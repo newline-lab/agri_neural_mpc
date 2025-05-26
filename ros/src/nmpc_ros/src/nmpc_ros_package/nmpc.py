@@ -407,7 +407,7 @@ class NeuralMPC:
         min_sq_dist = ca.mmin(sq_dist_to_targets)
 
         
-        threshold_sq_dist = 81.0
+        threshold_sq_dist = 9.0
         sigmoid_steepness = 10.0
         sigmoid_factor = 1.0 / (1.0 + ca.exp(-sigmoid_steepness * (min_sq_dist - threshold_sq_dist)))
 

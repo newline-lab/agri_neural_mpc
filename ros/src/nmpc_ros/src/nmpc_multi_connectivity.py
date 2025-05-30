@@ -99,13 +99,13 @@ class NeuralMPC:
         # assigned trees
         rospy.Subscriber("cluster", Int32MultiArray, self.assignment_callback)
         # Publishers
-        self.cmd_pose_pub = rospy.Publisher("cmd/pose", Pose, queue_size=10)
-        self.pred_path_pub = rospy.Publisher("predicted_path", Path, queue_size=10)
-        self.tree_markers_pub = rospy.Publisher("tree_markers", MarkerArray, queue_size=10)
-        self.predicition_pub = rospy.Publisher("predictions", Trajectory, queue_size=10)
+        self.cmd_pose_pub = rospy.Publisher("cmd/pose", Pose, queue_size=1)
+        self.pred_path_pub = rospy.Publisher("predicted_path", Path, queue_size=1)
+        self.tree_markers_pub = rospy.Publisher("tree_markers", MarkerArray, queue_size=1)
+        self.predicition_pub = rospy.Publisher("predictions", Trajectory, queue_size=1)
 
         # send lambda values
-        self.lambda_pub = rospy.Publisher('lambda', Float32MultiArray, queue_size=10)
+        self.lambda_pub = rospy.Publisher('lambda', Float32MultiArray, queue_size=1)
 
         # Get tree positions from service using the sensors.py serializer logic.
         self.trees_pos = self.get_trees_poses()
@@ -270,8 +270,10 @@ class NeuralMPC:
         msg = Trajectory()
         msg.header.stamp = rospy.Time.now()
         msg.id = self.n_agent
-        msg.positions_x = predicted_states[:, 0].full().flatten().tolist()
-        msg.positions_y = predicted_states[:, 1].full().flatten().tolist()
+        # msg.positions_x = predicted_states[:, 0].full().flatten().tolist()
+        # msg.positions_y = predicted_states[:, 1].full().flatten().tolist()
+        msg.positions_x = predicted_states[1:, 0].full().flatten().tolist()
+        msg.positions_y = predicted_states[1:, 1].full().flatten().tolist()
         self.predicition_pub.publish(msg)
 
     def get_latest_best_model(self):
@@ -415,6 +417,20 @@ class NeuralMPC:
             opti.subject_to(opti.bounded(0.0, ca.sumsqr(X[3:5, i]),4.00))
             opti.subject_to(opti.bounded(-3.14/4, X[5, i], 3.14 / 4))
 
+            # Connectivity maintenance
+            R = 3.0
+            n_neigh = int(num_predictions // 2 // steps)
+            temporal = int(2 * steps)
+            for n in range(n_neigh):
+                xs = NP0[n * temporal : n * temporal + temporal // 2]
+                ys = NP0[n * temporal + temporal // 2 : (n + 1) * temporal]
+                for tt in range(xs.shape[0]):
+                    pi = X[0:2, tt]  # Robot position at time tt (2D)
+                    pj = ca.vertcat(xs[tt], ys[tt])  # Neighbor position at time tt (2D)
+                    pij = pi - pj
+                    dist = ca.norm_2(pij)
+                    opti.subject_to(dist <= R)
+
             # Robot-Robot Collision avoidance
             pi = X0[0:2] 
             for n in self.neighbors_id:
@@ -450,7 +466,7 @@ class NeuralMPC:
 
         for i in range(steps):
             lambda_next = self.bayes(lambda_evol[-1], z_k[i::steps])
-            lambda_evol.append(lambda_next)
+            lambda_evol.append(lambda_next)            
 
         # Limited area (Cells) and attraction
         for i in range(steps+1):
@@ -592,8 +608,8 @@ class NeuralMPC:
 
             if self.assigned is not None:
 
-                # build predicted values
-                # if warm_start:
+                # build predicted values (DA CORREGGERE PARTE CON STIME VICINI)
+                # if warm_start or mpciter < 5:
                 traj = []
                 for n in self.neighbors_id:
                     x = self.neighbors_pos[2 * n]
@@ -604,6 +620,15 @@ class NeuralMPC:
                     traj.extend(x_repeated)
                     traj.extend(y_repeated)
                 neigh_pred = ca.DM(traj)
+                # else:
+                #     traj = []
+                #     for n in self.neighbors_id:
+                #         pred = self.neighbor_predictions[n]  # shape: (H, 2)
+                #         xs = pred[:, 0]
+                #         ys = pred[:, 1]
+                #         traj.extend(xs.tolist())
+                #         traj.extend(ys.tolist())
+                #     neigh_pred = ca.DM(traj)
 
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization

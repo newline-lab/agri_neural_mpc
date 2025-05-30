@@ -359,7 +359,7 @@ class NeuralMPC:
     # ---------------------------
     # MPC Optimization Function 
     # ---------------------------
-    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, steps=10):
+    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, neigh_pred, steps=10):
         nx_local = 3                   # For clarity in this function
         n_state = nx_local * 2         # 6-dimensional state: [x, y, theta, vx, vy, omega]
         n_control = nx_local           # 3-dimensional control: [ax, ay, angular_acc]
@@ -373,15 +373,12 @@ class NeuralMPC:
         # Parameter vector: initial state and tree beliefs.
         num_trees = trees.shape[0]
         num_neighbors = neighbors_positions.shape[0]
-        # Define total length for neighbor predictions (each neighbor has 2 * steps parameters: x and y per step)
-        neighbor_pred_length = 2 * steps  # x and y for each step in the horizon
-        total_neighbor_params = num_neighbors * neighbor_pred_length
-        P0 = opti.parameter(n_state + num_trees + num_neighbors)
-        # P0 = opti.parameter(n_state + num_trees + total_neighbor_params)
+        num_predictions = neigh_pred.shape[0]
+        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_predictions)
         X0 = P0[: n_state]
         L0 = P0[n_state:n_state+num_trees]
-        N0 = P0[n_state+num_trees:]
-
+        N0 = P0[n_state+num_trees:n_state+num_trees+num_neighbors]
+        NP0 = P0[n_state+num_trees+num_neighbors:]
         # Initialize belief evolution.
         lambda_evol = [L0]
 
@@ -496,7 +493,7 @@ class NeuralMPC:
         }
         opti.solver("ipopt", options)
         # Set the parameter values.
-        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions))
+        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, neigh_pred))
         sol = opti.solve()
 
         # Create the MPC step function for warm starting.
@@ -594,15 +591,29 @@ class NeuralMPC:
             self.tree_markers_pub.publish(tree_markers_msg)
 
             if self.assigned is not None:
+
+                # build predicted values
+                # if warm_start:
+                traj = []
+                for n in self.neighbors_id:
+                    x = self.neighbors_pos[2 * n]
+                    y = self.neighbors_pos[2 * n + 1]
+                    # Repeat x and y positions mpc_horizon times each
+                    x_repeated = [x] * self.mpc_horizon
+                    y_repeated = [y] * self.mpc_horizon
+                    traj.extend(x_repeated)
+                    traj.extend(y_repeated)
+                neigh_pred = ca.DM(traj)
+
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
-                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, self.mpc_horizon)
+                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, neigh_pred, self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos)), x_dec, lam)
+                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), neigh_pred), x_dec, lam)
                         
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.

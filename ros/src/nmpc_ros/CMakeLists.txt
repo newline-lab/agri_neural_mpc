@@ -24,11 +24,17 @@ add_service_files(
    GetTreesPoses.srv
 )
 
+add_message_files(
+  FILES
+  Trajectory.msg
+)
+
 
 ## Generate added messages and services with any dependencies listed here
 generate_messages(
   DEPENDENCIES
-  geometry_msgs#   std_msgs
+  geometry_msgs
+  std_msgs
 )
 
 ################################################
@@ -80,6 +86,7 @@ catkin_install_python(PROGRAMS
   multi_nmpc_ros_node.py
   multi_data_association_node.py
   kmeans.py
+  multi_nmpc_ros_node_connectivity.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

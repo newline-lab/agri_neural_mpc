@@ -5,6 +5,23 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.lines import Line2D
+import seaborn as sns
+from PIL import Image
+import matplotlib.image as mpimg
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+
+import io
+from cairosvg import svg2png
+png_bytes = svg2png(url="/home/pantheon/drea/neural_mpc/ros/src/nmpc_ros/results/sun_orientation.svg")
+logo_arr = mpimg.imread(io.BytesIO(png_bytes), format='PNG')
+
+
+paired_palette = sns.color_palette("Paired")
+paired_palette[0]  # light blue
+paired_palette[1]  # orange
+paired_palette[2]  # green
+paired_palette[3]  # red
+dark_paired_palette = sns.color_palette("dark")
 
 def get_latest_csv(mode, directory, suffix="plot_data.csv"):
     pattern = os.path.join(directory, f"{mode}*{suffix}")
@@ -55,17 +72,18 @@ def plot_trajectory_subplot(ax, x, y, theta, trees, lambda_history, custom_cmap,
         num_trees = trees.shape[0]
         # This specific handle is for legend construction, generic representation
         tree_handles_for_legend = [
-             Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
+             Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
                     markersize=10, label='Ripe(Red)-Raw(Green) Trees Belief')
         ]
+        
         for i in range(num_trees):
             if lambda_history.size > 0 and lambda_history.shape[0] > 0 and lambda_history.shape[1] > i:
                 final_lambda = lambda_history[-1, i]
             else:
                 final_lambda = 0.5
             tree_color = custom_cmap(final_lambda)
-            ax.scatter(trees[i, 0], trees[i, 1], color=tree_color, s=100, marker='s', zorder=3)
-            ax.text(trees[i, 0], trees[i, 1], str(i), fontsize=tree_label_fontsize, ha="center", va="bottom")
+            ax.scatter(trees[i, 0], trees[i, 1], color=tree_color, s=100, marker='o', zorder=3)
+
 
     if is_single_mode_plot:
         base_handles = [
@@ -77,7 +95,7 @@ def plot_trajectory_subplot(ax, x, y, theta, trees, lambda_history, custom_cmap,
         ax.legend(handles=all_handles, loc='lower center',
                   bbox_to_anchor=(0.5, -0.35), # Adjusted for single plot better legend placement
                   fontsize=legend_fontsize_param, ncol=2, frameon=True) # Reduced ncol for better fit
-    # else: For multi-mode subplots, the legend will be handled at the figure level.
+
 
     arrow_length = 1.5
     step = max(1, len(x) // 300) # Reduced number of arrows for clarity, e.g. max 20 arrows
@@ -88,10 +106,15 @@ def plot_trajectory_subplot(ax, x, y, theta, trees, lambda_history, custom_cmap,
             y1 = y0 + arrow_length * np.sin(t)
             ax.annotate("", xy=(x1, y1), xytext=(x0, y0), arrowprops=dict(arrowstyle="->", color="orange", linewidth=1.0))
 
-    ax.set_xlabel("X(m)", fontsize=axis_label_fontsize)
-    ax.set_ylabel("Y(m)", fontsize=axis_label_fontsize)
-    ax.tick_params(axis='both', which='major', labelsize=tick_label_fontsize)
-    #ax.set_aspect('equal', adjustable='box')
+    #ax.set_xlabel("X(m)", fontsize=axis_label_fontsize)
+    #ax.set_ylabel("Y(m)", fontsize=axis_label_fontsize)
+    ax.tick_params(axis='both', labelsize=tick_label_fontsize)
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlim(-4.0, 18.5)  # Replace -10, 10 with your desired limits
+    ax.set_ylim(-20.5, +1.5)
+    from matplotlib.ticker import MultipleLocator
+
+    ax.yaxis.set_major_locator(MultipleLocator(5))
 
     if is_single_mode_plot:
         pass
@@ -117,23 +140,23 @@ def plot_entropy_subplot(ax, time_history, entropy,
 
 def main():
     # Test with 5 modes to check centering
-    modes = ["mpc", "greedy", "linear",] #"mower_good", "mower_bad"] 
-    # modes = ["mpc", "greedy", "linear", "mower_good"] # Test with 4 modes
+    #modes = ["mower_good", "mower_bad"] 
+    modes = ["mpc", "greedy", "linear"]
     # modes = ["mpc", "greedy"] # Test with 2 modes
     # modes = ["mpc"] # Test with 1 mode
     baselines_dir = "to_plot" 
 
     axis_label_fontsize = 15
-    tick_label_fontsize = 12 # Increased for better readability
-    subplot_title_fontsize = 16 # Increased
-    legend_fontsize = 14 # General legend fontsize
-    suptitle_fontsize = 18 # Increased
+    tick_label_fontsize = 12
+    subplot_title_fontsize = 16
+    legend_fontsize = 14
+    suptitle_fontsize = 18
     tree_label_fontsize = 10
 
+    # Verde (unripe) ? Giallo ? Rosso (ripe)
     custom_cmap = LinearSegmentedColormap.from_list(
-        "custom_cmap", [(1, 0, 0), (1, 1, 0), (0, 1, 0)] # Red, Yellow, Green
+        "custom_cmap", [paired_palette[3], (0.5, 0.5, 0.5), dark_paired_palette[1]]
     )
-
     algorithm_labels = {
         "linear": "Linear Path",
         "greedy": "Greedy Approach",
@@ -176,7 +199,7 @@ def main():
         fig_traj.tight_layout(rect=[0, 0.1, 1, 0.93]) # Adjust rect for suptitle and legend
 
         output_path_traj = os.path.join(baselines_dir, f"{mode}_trajectory.eps")
-        plt.savefig(output_path_traj, format='eps', bbox_inches='tight')
+        plt.savefig(output_path_traj, format='eps', bbox_inches='tight',  dpi=350)
         print(f"Saved trajectory plot for {mode} to: {output_path_traj}")
 
         fig_entropy, ax_entropy = plt.subplots(figsize=(10,6))
@@ -186,7 +209,7 @@ def main():
         fig_entropy.suptitle(f"{mode_desc}: Entropy Trend", fontsize=suptitle_fontsize)
         fig_entropy.tight_layout(rect=[0, 0.03, 1, 0.93])
 
-        output_path_entropy = os.path.join(baselines_dir, f"{mode}_entropy.eps")
+        output_path_entropy = os.path.join(baselines_dir, f"{mode}_entropy.eps",  dpi=350)
         plt.savefig(output_path_entropy, format='eps', bbox_inches='tight')
         print(f"Saved entropy plot for {mode} to: {output_path_entropy}")
 
@@ -273,7 +296,16 @@ def main():
                                         subplot_title_fontsize,
                                         mode_desc, is_single_mode_plot=False)
                 active_plot_count_traj += 1
-
+            oim = OffsetImage(logo_arr, zoom=0.075)  # tweak `zoom` so it?s the right size
+            # 0.05, 0.95 are in Axes?fraction coordinates (5% from left, 95% from bottom),
+            # which places it near the top?left corner?adjust as needed.
+            ab = AnnotationBbox(
+                oim,
+                (-0.01, 1.01),
+                xycoords="axes fraction",
+                frameon=False
+            )
+            ax_traj_current.add_artist(ab)
             ax_entropy_combined.plot(time_h, entropy_val, marker='o', color=colors_for_modes[idx],
                                      linewidth=1.5, markersize=3, label=mode_desc) # Slightly thicker lines
 
@@ -281,18 +313,14 @@ def main():
         if active_plot_count_traj > 0:
             legend_handles = [
                 Line2D([0], [0], color='orange', lw=1.5, marker='o', markersize=2, label='Drone Trajectory'),
-                Line2D([0], [0], marker='X', color='w', markerfacecolor='crimson', markersize=10, label='Initial Position'),
-                Line2D([0], [0], marker='*', color='w', markerfacecolor='gold', markersize=12, label='Final Position'),
+                Line2D([0], [0], marker='X', color='w', markerfacecolor='crimson', markersize=15, label='Initial Position'),
+                Line2D([0], [0], marker='*', color='w', markerfacecolor='gold', markersize=25, label='Final Position'),
             ]
             if any_mode_had_trees:
                 legend_handles.append(
-                    Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
                            markersize=8, label='Ripe(Red)-Raw(Green) Trees Belief')
                 )
-
-            fig_trajectories.legend(handles=legend_handles, loc='lower center',
-                                    bbox_to_anchor=(0.5, 0.01), # Adjust y to be just above bottom
-                                    ncol=len(legend_handles), fontsize=legend_fontsize, frameon=False)
             
             fig_trajectories.suptitle("Algorithm Trajectories Comparison", fontsize=suptitle_fontsize, y=0.98) # Adjust y for suptitle
 
@@ -301,8 +329,10 @@ def main():
                 if i_ax not in used_axes_indices:
                     fig_trajectories.delaxes(ax_curr)
             
-            fig_trajectories.tight_layout(rect=[0, 0.05, 1, 0.95]) # Adjust rect for suptitle and fig legend
-
+            #fig_trajectories.tight_layout(rect=[0, 0.05, 1, 0.95]) # Adjust rect for suptitle and fig legend
+            fig_trajectories.legend(handles=legend_handles, loc='lower center',
+                                    bbox_to_anchor=(0.5, 0.01), # Adjust y to be just above bottom
+                                    ncol=len(legend_handles), fontsize=legend_fontsize, frameon=False)
             output_path_trajectories = os.path.join(baselines_dir, "comparison_trajectories.eps")
             plt.savefig(output_path_trajectories, format='eps', bbox_inches='tight')
             print(f"Saved trajectories comparison plot to: {output_path_trajectories}")

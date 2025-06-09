@@ -19,7 +19,7 @@ from plotly.subplots import make_subplots
 
 # ROS message imports
 from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion
-from std_msgs.msg import Float32MultiArray, Int32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32MultiArray, Float64MultiArray
 from visualization_msgs.msg import MarkerArray
 from nav_msgs.msg import Path
 import tf
@@ -107,6 +107,17 @@ class NeuralMPC:
         self.trees_pos = self.get_trees_poses()
         self.lambda_k = ca.DM.ones(self.trees_pos.shape[0], 1) * 0.5
 
+        # robot positions
+        rospy.Subscriber("/robot_states", Float64MultiArray, self.positions_callback)
+        self.robot_positions = None
+
+        # Connectivity
+        self.R = rospy.get_param('~R', 3.0)
+        self.alpha_elem = rospy.get_param('~alpha_elem', 1.0)
+        self.lambda2 = ca.DM.ones(1,1)
+        self.beta = ca.DM.zeros(2,1)
+        self.adjacency = None
+
         # Consensus protocol
         # Network connection (fully connected)
         n_robots = 3
@@ -134,27 +145,6 @@ class NeuralMPC:
  
         # List of assigned trees (ID)
         self.assigned = None
-        # if self.n_agent == 1:
-        #     # Outside
-        #     # self.assigned = [0, 1, 5, 6, 10, 11, 15, 16]              # T
-        #     # self.assigned = [0, 1, 5, 6, 10, 11, 15, 16, 20, 21]      # Rect
-        #     # self.assigned = [0, 1, 2, 5, 6, 7, 10, 11, 12]            # L
-        #     # Inside
-        #     # self.assigned = [0, 1, 2, 5, 6, 7, 10, 11, 12]            # Rect
-        # if self.n_agent == 2:
-        #     # Outside
-        #     # self.assigned = [2, 7, 12, 17, 20, 21, 22, 23, 24]        # T
-        #     # self.assigned = [2, 7, 12, 17, 22]                        # Rect
-        #     # self.assigned = [3, 8, 13, 15, 16, 17, 18]                # L
-        #     # Inside
-        #     # self.assigned = [15, 16, 17, 18, 19, 20, 21, 22, 23, 24]  # Rect
-        # if self.n_agent == 3:
-        #     # Outside
-        #     # self.assigned = [3, 4, 8, 9, 13, 14, 18, 19]              # T
-        #     # self.assigned = [3, 4, 8, 9, 13, 14, 18, 19, 23, 24]      # Rect
-        #     # self.assigned = [4, 9, 14, 19, 20, 21, 22, 23, 24]        # L
-        #     # Inside
-        #     # self.assigned = [3, 4, 8, 9, 13, 14]                      # Rect
 
 
     # ---------------------------
@@ -205,6 +195,13 @@ class NeuralMPC:
         Callback for tree scores.
         """
         self.latest_trees_scores = np.array(msg.data).reshape(-1, 1)
+
+    def positions_callback(self, msg):
+        """
+        Callback for robot positions
+        """
+        self.robot_positions = np.array(msg.data)
+
 
     def assignment_callback(self, msg):
         """
@@ -332,12 +329,64 @@ class NeuralMPC:
         # return -a*(1-lambda_c) *ca.exp(-((x-x_c)**p + (y-y_c)**p)/((2.0*s)**p))
         # Distanza
         return a * (1-lambda_c) * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
+    
+    def d_lambda2_dx(self, positions):
+        """Calcola adjacency, lambda2 e beta a partire da positions (1D: [x1,y1,...,xn,yn])."""
+        n = len(positions) // 2
+        q_flat = positions  # vettore 1D [x1, y1, ..., xn, yn]
+        q = q_flat.reshape((n, 2))     # matrice n x 2
+
+        R = self.R
+        sigma = np.sqrt((R ** 4) / np.log(2))
+
+        # Calcolo matrice di adiacenza A
+        A = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                t0 = q[i] - q[j]
+                d2 = np.dot(t0, t0)  # distanza al quadrato
+                if d2 < R**2:
+                    t1 = R**2 - d2
+                    A_ij = self.alpha_elem * (np.exp((t1**2) / (sigma**2)) - 1)
+                    A[i, j] = A[j, i] = A_ij
+                else:
+                    A[i, j] = A[j, i] = 0.0
+
+        self.adjacency = A
+
+        # Costruzione Laplaciano L = D - A
+        D = np.diag(np.sum(A, axis=1))
+        L = D - A
+
+        # Calcolo lambda2 e autovettori
+        eigvals, eigvecs = np.linalg.eigh(L)
+        eigvals_sorted = np.sort(eigvals)
+        idx_sorted = np.argsort(eigvals)
+        v2 = eigvecs[:, idx_sorted[1]] if n > 1 else np.zeros(n)
+        self.lambda2 = eigvals_sorted[1] if n > 1 else 0.0
+
+        # Calcolo gradiente beta (lunghezza 2n)
+        beta = np.zeros(2)
+        i = self.n_agent-1
+        for j in range(n):
+            if i == j or A[i, j] == 0:
+                continue
+
+            dv = v2[i] - v2[j]
+            t0 = q[i] - q[j]  # vettore (2,)
+            t1 = R**2 - np.dot(t0, t0)
+            t2 = sigma**2
+            exp_term = np.exp((t1**2) / t2)
+            dadxi = -4 * t1 * exp_term / t2 * t0
+            beta += dadxi * (dv ** 2)
+
+        self.beta = beta
 
 
     # ---------------------------
     # MPC Optimization Function 
     # ---------------------------
-    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, steps=10):
+    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, lambda2, beta, steps=10):
         nx_local = 3                   # For clarity in this function
         n_state = nx_local * 2         # 6-dimensional state: [x, y, theta, vx, vy, omega]
         n_control = nx_local           # 3-dimensional control: [ax, ay, angular_acc]
@@ -351,10 +400,14 @@ class NeuralMPC:
         # Parameter vector: initial state and tree beliefs.
         num_trees = trees.shape[0]
         num_neighbors = neighbors_positions.shape[0]
-        P0 = opti.parameter(n_state + num_trees + num_neighbors)
+        num_lambda2 = 1 # lambda2.shape[0]
+        num_beta = beta.shape[0]
+        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_lambda2 + num_beta)
         X0 = P0[: n_state]
         L0 = P0[n_state:n_state+num_trees]
-        N0 = P0[n_state+num_trees:]
+        N0 = P0[n_state+num_trees:n_state+num_trees+num_neighbors]
+        L20 = P0[n_state+num_trees+num_neighbors:n_state+num_trees+num_neighbors+num_lambda2]
+        B0 = P0[n_state+num_trees+num_neighbors+num_lambda2:]
         # Initialize belief evolution.
         lambda_evol = [L0]
 
@@ -380,6 +433,10 @@ class NeuralMPC:
 
         # Not assigned trees (ID)
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
+
+        # connectivity
+        opti.subject_to(B0*U[0:2, 0] >= -(L20-0.1))
+        opti.subject_to(B0*U[0:2, 1] >= -(L20+B0*U[0:2, 0]-0.1))
 
         # Loop over the prediction horizon.
         for i in range(steps+1):
@@ -469,7 +526,7 @@ class NeuralMPC:
         }
         opti.solver("ipopt", options)
         # Set the parameter values.
-        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions))
+        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, lambda2, beta))
         sol = opti.solve()
 
         # Create the MPC step function for warm starting.
@@ -500,7 +557,6 @@ class NeuralMPC:
         # ---------------------------
         # Load the Learned Neural Network Models
         # ---------------------------
-        
         model = MultiLayerPerceptron(input_dim=self.nn_input_dim,
                                      hidden_size=self.hidden_size,
                                      hidden_layers=self.hidden_layers)
@@ -542,7 +598,7 @@ class NeuralMPC:
         while mpciter < sim_time and not rospy.is_shutdown():
             # rospy.loginfo('Step: %d', mpciter)
             # Update state from the latest GPS callback.
-            while self.current_state is None and not rospy.is_shutdown():
+            while self.current_state is None and not rospy.is_shutdown() or self.robot_positions is None:
                 rospy.sleep(0.05)
             current_state = self.current_state
             current_sim_time = time.time() - sim_start_time
@@ -566,16 +622,20 @@ class NeuralMPC:
             tree_markers_msg = create_tree_markers(self.trees_pos, self.lambda_k.full().flatten())
             self.tree_markers_pub.publish(tree_markers_msg)
 
+            while self.robot_positions is None:
+                rospy.sleep(0.05)
+
             if self.assigned is not None:
+                self.d_lambda2_dx(self.robot_positions)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
-                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, self.mpc_horizon)
+                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, ca.DM(self.lambda2), ca.DM(self.beta), self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos)), x_dec, lam)
+                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
                         
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.

@@ -19,7 +19,7 @@ from plotly.subplots import make_subplots
 
 # ROS message imports
 from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion
-from std_msgs.msg import Float32MultiArray, Int32MultiArray, Float64MultiArray
+from std_msgs.msg import Float32MultiArray, Int32MultiArray, Float64MultiArray, Int32
 from visualization_msgs.msg import MarkerArray
 from nav_msgs.msg import Path
 import tf
@@ -146,6 +146,12 @@ class NeuralMPC:
         # List of assigned trees (ID)
         self.assigned = None
 
+        # Sync
+        self.ok_mpc = rospy.Publisher('/mpc_ok', Int32, queue_size=1)
+        rospy.Subscriber("/current_step", Int32, self.next_step)
+        self.current_setp = 0 # sync step
+        self.mpc_step = 0     # agent i step
+
 
     # ---------------------------
     # Callback Functions
@@ -189,6 +195,10 @@ class NeuralMPC:
                     rospy.logwarn("Failed to get transform: %s", e)
             self.neighbors_pos = ca.DM(poss)
             rate.sleep()
+
+    def next_step(self, msg):
+        "Perform next control"
+        self.current_setp += 1
 
     def tree_scores_callback(self, msg):
         """
@@ -415,7 +425,7 @@ class NeuralMPC:
         trees_dm = ca.DM(trees)  # Expected shape: (num_trees, 2)
 
         # Weights and safety parameters.
-        w_control = 1e-2         # Control effort weight
+        w_control = 5*1e-2         # Control effort weight
         w_ang = 1e-4             # Angular control weight
         w_entropy = 1e1          # Weight for final entropy
         w_attract = 1e-2         # Weight for low-entropy attraction
@@ -435,8 +445,8 @@ class NeuralMPC:
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
 
         # connectivity
-        opti.subject_to(B0*U[0:2, 0] >= -(L20-0.1))
-        opti.subject_to(B0*U[0:2, 1] >= -(L20+B0*U[0:2, 0]-0.1))
+        opti.subject_to(B0*U[0:2, 0] >= -0.8*(L20-0.1))
+        opti.subject_to(B0*U[0:2, 1] >= -0.8*(L20+B0*U[0:2, 0]-0.1))
 
         # Loop over the prediction horizon.
         for i in range(steps+1):
@@ -622,10 +632,10 @@ class NeuralMPC:
             tree_markers_msg = create_tree_markers(self.trees_pos, self.lambda_k.full().flatten())
             self.tree_markers_pub.publish(tree_markers_msg)
 
-            while self.robot_positions is None:
+            while self.robot_positions is None: 
                 rospy.sleep(0.05)
 
-            if self.assigned is not None:
+            if self.assigned is not None and self.mpc_step == self.current_setp:
                 self.d_lambda2_dx(self.robot_positions)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
@@ -636,7 +646,13 @@ class NeuralMPC:
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
                         u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
-                        
+
+                # Notify current iteration done  
+                    self.mpc_step += 1
+                    msg = Int32()
+                    msg.data = self.n_agent
+                    self.ok_mpc.publish(msg)
+
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.
                 u_np = np.array(u.full()).flatten()

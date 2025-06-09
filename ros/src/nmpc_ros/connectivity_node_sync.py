@@ -3,7 +3,7 @@ import rospy
 import tf2_ros
 import numpy as np
 from geometry_msgs.msg import TransformStamped
-from std_msgs.msg import Float64, Float64MultiArray, MultiArrayDimension
+from std_msgs.msg import Float64, Float64MultiArray, MultiArrayDimension, Int32
 
 class RobotsPositionListener:
     def __init__(self):
@@ -14,6 +14,12 @@ class RobotsPositionListener:
         self.alpha_elem = rospy.get_param('~alpha_elem', 1.0)
         self.R = rospy.get_param('~R', 3.0)
         self.sigma = np.sqrt((self.R**4) / np.log(2))
+
+        # Sincronizzazione
+        rospy.Subscriber("/mpc_ok", Int32, self.mpc_callback)
+        self.pub_next_step = rospy.Publisher('/current_step', Int32, queue_size=1)
+        self.current_step = 0
+        self.curret_ok = [0 for _ in range(self.num_robots)] # se tutti 1 step completo
 
         # TF
         self.tf_buffer = tf2_ros.Buffer()
@@ -28,6 +34,10 @@ class RobotsPositionListener:
         # Loop principale
         self.main_loop()
 
+    # metti ha 1 l'id dell'mpc che ha fatto
+    def mpc_callback(self, msg):
+        self.curret_ok[msg.data-1] = 1
+
     def main_loop(self):
         rate = rospy.Rate(30)  # 100 Hz
         while not rospy.is_shutdown():
@@ -39,7 +49,20 @@ class RobotsPositionListener:
                 lambda2 = self.compute_lambda2(A)
                 self.lambda2_pub.publish(lambda2)
                 # rospy.loginfo_throttle(1, f"Lambda2: {lambda2:.4f}")
-            rate.sleep()
+                rate.sleep()
+                # ripubblica vecchi dati finche tutti non hanno calcolato
+                while(any(x == 0 for x in self.curret_ok)):
+                    self.publish_robot_positions(positions)
+                    self.publish_adjacency_matrix(A)
+                    self.lambda2_pub.publish(lambda2)
+                    rate.sleep()
+                # aggiorna a step successivo
+                self.curret_ok = [0 for _ in range(self.num_robots)] # se tutti 1 step completo
+                self.current_step += 1
+                msg = Int32()
+                msg.data = self.current_step
+                self.pub_next_step.publish(msg)
+
 
     def get_robot_positions(self):
         positions = np.zeros((self.num_robots, 2))

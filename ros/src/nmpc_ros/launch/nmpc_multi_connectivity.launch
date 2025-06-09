@@ -25,6 +25,13 @@
         <param name="n_agents" value="3" />
   </node> 
 
+   <!-- Connectivity -->
+  <node name="Lambda_2" pkg="nmpc_ros" type="connectivity_node.py" output="screen">
+    <param name="num_robots" value="3"/>
+    <param name="alpha_elem" value="1.0"/>
+    <param name="R" value="6.0"/>
+  </node> 
+
   <arg name="node_start_delay_first" default="5.0" />  <!-- Delay first mpc -->
   <arg name="node_start_delay_mpc" default="6.0" />    <!-- Delay second, third mpcs -->
 

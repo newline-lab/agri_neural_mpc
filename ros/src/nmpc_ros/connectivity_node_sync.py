@@ -51,10 +51,10 @@ class RobotsPositionListener:
                 # rospy.loginfo_throttle(1, f"Lambda2: {lambda2:.4f}")
                 rate.sleep()
                 # ripubblica vecchi dati finche tutti non hanno calcolato
-                while(any(x == 0 for x in self.curret_ok)):
-                    self.publish_robot_positions(positions)
-                    self.publish_adjacency_matrix(A)
-                    self.lambda2_pub.publish(lambda2)
+                while(any(x == 0 for x in self.curret_ok)) and not rospy.is_shutdown():
+                    # self.publish_robot_positions(positions)
+                    # self.publish_adjacency_matrix(A)
+                    # self.lambda2_pub.publish(lambda2)
                     rate.sleep()
                 # aggiorna a step successivo
                 self.curret_ok = [0 for _ in range(self.num_robots)] # se tutti 1 step completo

@@ -375,7 +375,7 @@ class NeuralMPC:
         v2 = eigvecs[:, idx_sorted[1]] if n > 1 else np.zeros(n)
         self.lambda2 = eigvals_sorted[1] if n > 1 else 0.0
 
-        # Calcolo gradiente beta (lunghezza 2n)
+        # Calcolo gradiente beta_i
         beta = np.zeros(2)
         i = self.n_agent-1
         for j in range(n):
@@ -425,7 +425,7 @@ class NeuralMPC:
         trees_dm = ca.DM(trees)  # Expected shape: (num_trees, 2)
 
         # Weights and safety parameters.
-        w_control = 5*1e-2         # Control effort weight
+        w_control = 1e-2         # Control effort weight
         w_ang = 1e-4             # Angular control weight
         w_entropy = 1e1          # Weight for final entropy
         w_attract = 1e-2         # Weight for low-entropy attraction
@@ -444,9 +444,6 @@ class NeuralMPC:
         # Not assigned trees (ID)
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
 
-        # connectivity
-        opti.subject_to(B0*U[0:2, 0] >= -0.8*(L20-0.1))
-        opti.subject_to(B0*U[0:2, 1] >= -0.8*(L20+B0*U[0:2, 0]-0.1))
 
         # Loop over the prediction horizon.
         for i in range(steps+1):
@@ -457,6 +454,11 @@ class NeuralMPC:
 
             opti.subject_to(opti.bounded(0.0, ca.sumsqr(X[3:5, i]),4.00))
             opti.subject_to(opti.bounded(-3.14/4, X[5, i], 3.14 / 4))
+
+            # connectivity
+            alfa = 0.8
+            if i < steps:
+                opti.subject_to(ca.dot(B0, U[0:2, i]) >= -alfa*(L20-0.1))
 
             # Robot-Robot Collision avoidance
             pi = X0[0:2] 
@@ -497,9 +499,9 @@ class NeuralMPC:
 
         # Limited area (Cells) and attraction
         for i in range(steps+1):
-            for n_a in not_assigned_tree:
-                # penalty for unassigned cells
-                penalty_cells += self.penalty_2d(X[0, i], X[1, i], self.trees_pos[n_a][0], self.trees_pos[n_a][1], p=10, s=0.9, a=5)
+            # for n_a in not_assigned_tree:
+            #     # penalty for unassigned cells
+            #     penalty_cells += self.penalty_2d(X[0, i], X[1, i], self.trees_pos[n_a][0], self.trees_pos[n_a][1], p=10, s=0.9, a=5)
             for a_a in assigned_tree:
                 # aggregation term for assigned cells 
                 aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
@@ -637,6 +639,7 @@ class NeuralMPC:
 
             if self.assigned is not None and self.mpc_step == self.current_setp:
                 self.d_lambda2_dx(self.robot_positions)
+                print(self.n_agent, self.robot_positions)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
                     mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, ca.DM(self.lambda2), ca.DM(self.beta), self.mpc_horizon)
@@ -646,6 +649,9 @@ class NeuralMPC:
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
                         u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
+                # else: # debug solo connectivity
+                #     u = ca.DM.zeros((3,2))
+                #     u[0:2,0] = self.beta
 
                 # Notify current iteration done  
                     self.mpc_step += 1

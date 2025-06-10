@@ -39,7 +39,7 @@ class RobotsPositionListener:
         self.curret_ok[msg.data-1] = 1
 
     def main_loop(self):
-        rate = rospy.Rate(30)  # 100 Hz
+        rate = rospy.Rate(10)  # 100 Hz
         while not rospy.is_shutdown():
             positions = self.get_robot_positions()
             if positions is not None:
@@ -62,6 +62,7 @@ class RobotsPositionListener:
                 msg = Int32()
                 msg.data = self.current_step
                 self.pub_next_step.publish(msg)
+                rate.sleep()
 
 
     def get_robot_positions(self):

@@ -97,11 +97,11 @@ class NeuralMPC:
         # assigned trees
         rospy.Subscriber("cluster", Int32MultiArray, self.assignment_callback)
         # Publishers
-        self.cmd_pose_pub = rospy.Publisher("cmd/pose", Pose, queue_size=10)
-        self.pred_path_pub = rospy.Publisher("predicted_path", Path, queue_size=10)
-        self.tree_markers_pub = rospy.Publisher("tree_markers", MarkerArray, queue_size=10)
+        self.cmd_pose_pub = rospy.Publisher("cmd/pose", Pose, queue_size=1)
+        self.pred_path_pub = rospy.Publisher("predicted_path", Path, queue_size=1)
+        self.tree_markers_pub = rospy.Publisher("tree_markers", MarkerArray, queue_size=1)
         # send lambda values
-        self.lambda_pub = rospy.Publisher('lambda', Float32MultiArray, queue_size=10)
+        self.lambda_pub = rospy.Publisher('lambda', Float32MultiArray, queue_size=1)
 
         # Get tree positions from service using the sensors.py serializer logic.
         self.trees_pos = self.get_trees_poses()
@@ -112,6 +112,7 @@ class NeuralMPC:
         self.robot_positions = None
 
         # Connectivity
+        self.epsilon = 0.1
         self.R = rospy.get_param('~R', 3.0)
         self.alpha_elem = rospy.get_param('~alpha_elem', 1.0)
         self.lambda2 = ca.DM.ones(1,1)
@@ -458,7 +459,7 @@ class NeuralMPC:
             # connectivity
             alfa = 0.8
             if i < steps:
-                opti.subject_to(ca.dot(B0, U[0:2, i]) >= -alfa*(L20-0.1))
+                opti.subject_to(ca.dot(B0, U[0:2, i]) >= -alfa*(L20-self.epsilon))
 
             # Robot-Robot Collision avoidance
             pi = X0[0:2] 
@@ -534,7 +535,8 @@ class NeuralMPC:
                 "sb": "no",
                 "mu_strategy": "monotone",
                 "max_iter": 3000
-            }
+            },
+            "print_time": False               # Disattiva stime di tempo
         }
         opti.solver("ipopt", options)
         # Set the parameter values.
@@ -634,30 +636,30 @@ class NeuralMPC:
             tree_markers_msg = create_tree_markers(self.trees_pos, self.lambda_k.full().flatten())
             self.tree_markers_pub.publish(tree_markers_msg)
 
-            while self.robot_positions is None: 
-                rospy.sleep(0.05)
-
-            if self.assigned is not None and self.mpc_step == self.current_setp:
+            if self.assigned is not None and self.robot_positions is not None:
                 self.d_lambda2_dx(self.robot_positions)
-                print(self.n_agent, self.robot_positions)
+                print(self.n_agent, self.beta)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
                     mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, ca.DM(self.lambda2), ca.DM(self.beta), self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
-                    # Move to accomplish the task (if not completed)
-                    if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
-                # else: # debug solo connectivity
-                #     u = ca.DM.zeros((3,2))
-                #     u[0:2,0] = self.beta
+                    if self.lambda2 > self.epsilon:
+                        # Move to accomplish the task (if not completed)
+                        if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
+                            u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
+                    else: # backup strategy
+                        rospy.logerr(f"CONNESSIONE: comando di emergenza.")
+                        u = ca.DM.zeros((3,2))
+                        u[0:2,0] = 1/self.lambda2 * self.beta
 
                 # Notify current iteration done  
                     self.mpc_step += 1
                     msg = Int32()
                     msg.data = self.n_agent
                     self.ok_mpc.publish(msg)
+                    self.robot_positions = None
 
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.

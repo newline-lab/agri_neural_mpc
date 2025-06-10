@@ -4,7 +4,6 @@
 from sensor_msgs.msg import *
 from std_msgs.msg import *
 from geometry_msgs.msg import *
-from cv_bridge import CvBridge
 import numpy as np
 from nmpc_ros.srv import GetTreesPoses
 import tf
@@ -18,8 +17,6 @@ from visualization_msgs.msg import MarkerArray, Marker
 from geometry_msgs.msg import Point
 import rospy
 
-bridge = CvBridge()
-# Define the lambda function to create PoseArray from list of [x, y, yaw]
 
 create_pose_array = lambda data: PoseArray(
     poses=[
@@ -42,7 +39,7 @@ def create_path_from_mpc_prediction(mpc_prediction):
 
         pose.pose.position.x = mpc_prediction[0, i]
         pose.pose.position.y = mpc_prediction[1, i]
-        pose.pose.position.z = 1.7  # Assuming 2D motion
+        pose.pose.position.z = 1.5  # Assuming 2D motion
 
         # Assuming the third row is yaw, if available
         if mpc_prediction.shape[0] > 2:
@@ -59,45 +56,131 @@ def create_path_from_mpc_prediction(mpc_prediction):
 
     return path
 
-def create_tree_markers(trees_pos, scores):
+def create_tree_markers(trees_pos, lambda_values):
     markers = MarkerArray()
-    scores = scores.flatten()
-    for i, (tree_pos, score) in enumerate(zip(trees_pos, scores)):
-        if score == 0:
-            continue
-        
-        # Sphere marker for the tree
-        sphere_marker = Marker()
-        sphere_marker.header.frame_id = 'map'
-        sphere_marker.header.stamp = rospy.Time.now()
-        sphere_marker.ns = "tree_markers"
-        sphere_marker.id = i * 2
-        sphere_marker.type = Marker.CYLINDER
-        sphere_marker.action = Marker.ADD
-        sphere_marker.pose.position = Point(x=tree_pos[0], y=tree_pos[1], z=0.0)
-        sphere_marker.pose.orientation.w = 1.0
-        sphere_marker.scale.x = sphere_marker.scale.y = sphere_marker.scale.z = 0.5
-        sphere_marker.color.a = 1.0
-        sphere_marker.color.r = score
-        sphere_marker.color.g = 1.0 - score
-        sphere_marker.color.b = 0.0
-        markers.markers.append(sphere_marker)
-        
-        """# Text marker for the score
-        text_marker = Marker()
-        text_marker.header.frame_id = 'map'
-        text_marker.header.stamp = rospy.Time.now()
-        text_marker.ns = "tree_scores"
-        text_marker.id = i * 2 + 1
-        text_marker.type = Marker.TEXT_VIEW_FACING
-        text_marker.action = Marker.ADD
-        text_marker.pose.position = Point(x=tree_pos[0], y=tree_pos[1], z=4)
-        text_marker.text = f"Score: {score:.2f}"
-        text_marker.scale.z = 0.2
-        text_marker.color.a = 1.0
-        text_marker.color.r = text_marker.color.g = text_marker.color.b = 1.0
-        markers.markers.append(text_marker)"""
-    
+    lambda_values = np.array(lambda_values).flatten() # Ensure it's a flat numpy array
+
+    # --- Parameters for visualization ---
+    # Base Tree (Trunk)
+    BASE_TREE_DIAMETER = 0.4  # Diameter of the trunk
+    BASE_TREE_HEIGHT = 2.5    # Height of the trunk
+    BASE_TREE_COLOR_R, BASE_TREE_COLOR_G, BASE_TREE_COLOR_B, BASE_TREE_COLOR_A = 0.5, 0.35, 0.05, 1.0 # Brown
+
+    # Indicator Cylinders (Red/Green)
+    INDICATOR_MIN_HEIGHT = 0.1
+    INDICATOR_MAX_HEIGHT = .5
+    INDICATOR_DIAMETER = 0.15 # Diameter of red/green cylinders
+    # Offset to place them side-by-side. Slightly more than radius to have a small gap.
+    INDICATOR_OFFSET_X = INDICATOR_DIAMETER * 0.6
+
+    # Derived parameter: The range of height variation for indicator cylinders
+    VARIABLE_HEIGHT_RANGE = INDICATOR_MAX_HEIGHT - INDICATOR_MIN_HEIGHT
+
+    for i, (tree_pos, lambda_val) in enumerate(zip(trees_pos, lambda_values)):
+        # Original problem statement had `if score == 0: continue`.
+        # If lambda_val == 0 signifies "no tree" or "ignore", you might want to add this back.
+        # However, the height logic below will give min_height for lambda_val=0, which might be desired.
+        # For now, let's assume all lambda_values lead to a visualization.
+
+        # --- 1. Base Tree Trunk Marker ---
+        #trunk_marker = Marker()
+        #trunk_marker.header.frame_id = 'map'
+        #trunk_marker.header.stamp = rospy.Time.now()
+        #trunk_marker.ns = "tree_trunks"
+        #trunk_marker.id = i * 3 # Unique ID base
+        #trunk_marker.type = Marker.CYLINDER
+        #trunk_marker.action = Marker.ADD
+
+        # Position the base of the trunk at z=0, so its center is at z = BASE_TREE_HEIGHT / 2
+        #trunk_marker.pose.position = Point(x=tree_pos[0], y=tree_pos[1], z=BASE_TREE_HEIGHT / 2.0)
+        #trunk_marker.pose.orientation.w = 1.0
+        #trunk_marker.scale.x = BASE_TREE_DIAMETER
+        #trunk_marker.scale.y = BASE_TREE_DIAMETER
+        #trunk_marker.scale.z = BASE_TREE_HEIGHT
+        #trunk_marker.color.r = BASE_TREE_COLOR_R
+        #trunk_marker.color.g = BASE_TREE_COLOR_G
+        #trunk_marker.color.b = BASE_TREE_COLOR_B
+        #trunk_marker.color.a = BASE_TREE_COLOR_A
+        #markers.markers.append(trunk_marker)
+
+        # --- 2. Calculate Indicator Cylinder Heights ---
+        # Initialize with minimum height
+        red_height = INDICATOR_MIN_HEIGHT
+        green_height = INDICATOR_MIN_HEIGHT
+
+        # The top of the trunk cylinder is at z = BASE_TREE_HEIGHT
+        # (since its base is at 0 and height is BASE_TREE_HEIGHT)
+        indicator_base_z = BASE_TREE_HEIGHT
+
+        if lambda_val > 0.5:
+            # Red cylinder gets higher.
+            # The term (lambda_val - 0.5) ranges from (0, 0.5].
+            # We want to scale this to the [0, 1] range for proportionality: (lambda_val - 0.5) / 0.5 = 2 * (lambda_val - 0.5)
+            # This scaled_proportion ranges from (0, 1].
+            scaled_proportion = 2 * (lambda_val - 0.5)
+            red_height = INDICATOR_MIN_HEIGHT + VARIABLE_HEIGHT_RANGE * scaled_proportion
+            green_height = INDICATOR_MIN_HEIGHT
+        elif lambda_val < 0.5:
+            # Green cylinder gets higher.
+            # The term lambda_val ranges from [0, 0.5].
+            # We want to scale this to the [0, 1] range for proportionality: lambda_val / 0.5 = 2 * lambda_val
+            # This scaled_proportion ranges from [0, 1].
+            # The original formula: 1 - 2 * (0.5 - lambda_val) = 1 - (1 - 2*lambda_val) = 2 * lambda_val. So this is correct.
+            scaled_proportion = 1 - 2 * lambda_val
+
+            red_height = INDICATOR_MIN_HEIGHT
+            green_height = INDICATOR_MIN_HEIGHT + VARIABLE_HEIGHT_RANGE * scaled_proportion
+
+        # Clamp heights to be safe, though logic should prevent exceeding max.
+        red_height = max(INDICATOR_MIN_HEIGHT, min(INDICATOR_MAX_HEIGHT, red_height))
+        green_height = max(INDICATOR_MIN_HEIGHT, min(INDICATOR_MAX_HEIGHT, green_height))
+
+        # --- 3. Red Indicator Cylinder ---
+        red_marker = Marker()
+        red_marker.header.frame_id = 'map'
+        red_marker.header.stamp = rospy.Time.now()
+        red_marker.ns = "tree_lambda_indicators_red"
+        red_marker.id = i * 3 + 1
+        red_marker.type = Marker.CYLINDER
+        red_marker.action = Marker.ADD
+        # Position its base at indicator_base_z, so its center is at indicator_base_z + height/2
+        red_marker.pose.position = Point(
+            x=tree_pos[0] - INDICATOR_OFFSET_X,
+            y=tree_pos[1],
+            z=indicator_base_z + red_height / 2.0
+        )
+        red_marker.pose.orientation.w = 1.0
+        red_marker.scale.x = INDICATOR_DIAMETER
+        red_marker.scale.y = INDICATOR_DIAMETER
+        red_marker.scale.z = red_height
+        red_marker.color.r = 0.8588235294117647
+        red_marker.color.g = 0.37254901960784315
+        red_marker.color.b = 0.3411764705882353
+        red_marker.color.a = 1.0
+        markers.markers.append(red_marker)
+
+        # --- 4. Green Indicator Cylinder ---
+        green_marker = Marker()
+        green_marker.header.frame_id = 'map'
+        green_marker.header.stamp = rospy.Time.now()
+        green_marker.ns = "tree_lambda_indicators_green"
+        green_marker.id = i * 3 + 2
+        green_marker.type = Marker.CYLINDER
+        green_marker.action = Marker.ADD
+        green_marker.pose.position = Point(
+            x=tree_pos[0] + INDICATOR_OFFSET_X,
+            y=tree_pos[1],
+            z=indicator_base_z + green_height / 2.0
+        )
+        green_marker.pose.orientation.w = 1.0
+        green_marker.scale.x = INDICATOR_DIAMETER
+        green_marker.scale.y = INDICATOR_DIAMETER
+        green_marker.scale.z = green_height
+        green_marker.color.r = 0.6980392156862745
+        green_marker.color.g = 0.8745098039215686
+        green_marker.color.b = 0.5411764705882353
+        green_marker.color.a = 1.0
+        markers.markers.append(green_marker)
     return markers
 
 def update_robot_state(buffer):
@@ -115,71 +198,3 @@ def update_robot_state(buffer):
             rospy.logwarn(f"Failed to get transform: {e}")
         
     return robot_pose
-
-# Update the SENSORS dictionary with the new entry for the Detection2D message
-SENSORS = [
-  { 
-    "name":  "trees_poses",
-    "type":  GetTreesPoses,
-    "topic": "/obj_pose_srv",
-    "mode":  "srv",
-    "serializer": lambda pose_array_msg: np.array([[pose.position.x, pose.position.y] for pose in pose_array_msg.trees_poses.poses]),
-  },
-  {
-    "name":  "gps",
-    "type":  Pose,
-    "topic": "pose",
-    "mode":  "sub",
-    "serializer": lambda pose_msg: np.array([pose_msg.position.x, pose_msg.position.y, pose_msg.position.z,
-                                          np.arctan2(2.0 * (pose_msg.orientation.w * pose_msg.orientation.z + pose_msg.orientation.x * pose_msg.orientation.y),
-                                          1.0 - 2.0 * (pose_msg.orientation.y * pose_msg.orientation.y + pose_msg.orientation.z * pose_msg.orientation.z))]),
-  },
-  { 
-    "name":  "tree_scores",
-    "type":  Float32MultiArray,
-    "topic": "tree_scores",
-    "mode":  "sub",
-    "serializer": lambda array_msg: np.array(array_msg.data).reshape(-1,1),
-  },
-  { 
-    "name":  "cmd_pose",
-    "type":  Pose,
-    "topic": "cmd/pose",
-    "mode":  "pub",
-    "serializer":  lambda arr: Pose(position=Point(x=arr[0,0], y=arr[1,0], z=0.0), orientation=Quaternion(*tf.transformations.quaternion_from_euler(0, 0, arr[2,0]))),
-  },
-  { 
-    "name":  "viz_pred_pose",
-    "type":  PoseArray,
-    "topic": "viz/pred/traj",
-    "mode":  "pub",
-    "serializer":  create_pose_array,
-  },
-  {
-      "name": "predicted_path",
-      "type": Path,
-      "topic": "predicted_path",
-      "mode": "pub",
-      "serializer": lambda arr: create_path_from_mpc_prediction(arr),
-  },
-  {
-      "name": "tree_markers",
-      "type": MarkerArray,
-      "topic": "tree_markers",
-      "mode": "pub",
-      "serializer": lambda self: create_tree_markers(self["trees_pos"], self["lambda"]),
-  },
-  { 
-    "name":  "yolo_detector",
-    "type":  Detection2DArray,
-    "topic": "/yolov7/detect",
-    "mode":  "sub",
-    "serializer": lambda msg: [{ 
-                          'id': detection.results[0].id,
-                          'score': detection.results[0].score,
-                          'center_x': detection.bbox.center.x if detection.bbox else None,
-                          'center_y': detection.bbox.center.y if detection.bbox else None,
-                          'size_x': detection.bbox.size_x if detection.bbox else None,
-                          'size_y': detection.bbox.size_y if detection.bbox else None
-                        } for detection in msg.detections],  # Add the callback function here
-  }]

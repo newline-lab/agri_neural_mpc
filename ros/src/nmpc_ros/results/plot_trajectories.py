@@ -113,7 +113,7 @@ def plot_trajectory_subplot(ax, x, y, theta, trees, lambda_history, custom_cmap,
     ax.set_xlim(-4.0, 18.5)  # Replace -10, 10 with your desired limits
     ax.set_ylim(-20.5, +1.5)
     from matplotlib.ticker import MultipleLocator
-
+    ax.xaxis.set_major_locator(MultipleLocator(5))
     ax.yaxis.set_major_locator(MultipleLocator(5))
 
     if is_single_mode_plot:
@@ -140,8 +140,8 @@ def plot_entropy_subplot(ax, time_history, entropy,
 
 def main():
     # Test with 5 modes to check centering
-    #modes = ["mower_good", "mower_bad"] 
-    modes = ["mpc", "greedy", "linear"]
+    modes = ["mower_good", "mower_bad"] 
+    #modes = ["mpc", "greedy", "linear"]
     # modes = ["mpc", "greedy"] # Test with 2 modes
     # modes = ["mpc"] # Test with 1 mode
     baselines_dir = "to_plot" 
@@ -198,8 +198,8 @@ def main():
         fig_traj.suptitle(f"{mode_desc} Trajectory", fontsize=suptitle_fontsize)
         fig_traj.tight_layout(rect=[0, 0.1, 1, 0.93]) # Adjust rect for suptitle and legend
 
-        output_path_traj = os.path.join(baselines_dir, f"{mode}_trajectory.eps")
-        plt.savefig(output_path_traj, format='eps', bbox_inches='tight',  dpi=350)
+        output_path_traj = os.path.join(baselines_dir, f"{mode}_trajectory.png")
+        fig_traj.savefig(output_path_traj, format='png', bbox_inches='tight',  dpi=350)
         print(f"Saved trajectory plot for {mode} to: {output_path_traj}")
 
         fig_entropy, ax_entropy = plt.subplots(figsize=(10,6))
@@ -210,7 +210,7 @@ def main():
         fig_entropy.tight_layout(rect=[0, 0.03, 1, 0.93])
 
         output_path_entropy = os.path.join(baselines_dir, f"{mode}_entropy.eps",  dpi=350)
-        plt.savefig(output_path_entropy, format='eps', bbox_inches='tight')
+        fig_entropy.savefig(output_path_entropy, format='eps', bbox_inches='tight')
         print(f"Saved entropy plot for {mode} to: {output_path_entropy}")
 
         plt.show()
@@ -221,8 +221,8 @@ def main():
         # If num_modes is 4, the 2nd row has 1 plot on the left.
         # If num_modes <=3, only the 1st row is used.
         num_rows_traj = 1
-        num_cols_traj = 3
-        fig_trajectories, axes_trajectories = plt.subplots(num_rows_traj, num_cols_traj, figsize=(18, 12), squeeze=False)
+        num_cols_traj = 2
+        fig_trajectories, axes_trajectories = plt.subplots(num_rows_traj, num_cols_traj, figsize=(11, 6), squeeze=False)
         axes_trajectories_flat = axes_trajectories.flatten()
 
         fig_entropy_combined, ax_entropy_combined = plt.subplots(figsize=(12, 7))
@@ -333,8 +333,8 @@ def main():
             fig_trajectories.legend(handles=legend_handles, loc='lower center',
                                     bbox_to_anchor=(0.5, 0.01), # Adjust y to be just above bottom
                                     ncol=len(legend_handles), fontsize=legend_fontsize, frameon=False)
-            output_path_trajectories = os.path.join(baselines_dir, "comparison_trajectories.eps")
-            plt.savefig(output_path_trajectories, format='eps', bbox_inches='tight')
+            output_path_trajectories = os.path.join(baselines_dir, "comparison_trajectories.png")
+            fig_trajectories.savefig(output_path_trajectories, format='png', dpi=350)
             print(f"Saved trajectories comparison plot to: {output_path_trajectories}")
         else:
             plt.close(fig_trajectories)
@@ -350,7 +350,7 @@ def main():
             fig_entropy_combined.suptitle("Entropy Trends Comparison", fontsize=suptitle_fontsize)
             fig_entropy_combined.tight_layout(rect=[0, 0.03, 1, 0.95])
             output_path_entropies = os.path.join(baselines_dir, "comparison_entropies.eps")
-            plt.savefig(output_path_entropies, format='eps', bbox_inches='tight')
+            fig_entropy_combined.savefig(output_path_entropies, format='eps', bbox_inches='tight')
             print(f"Saved combined entropy plot to: {output_path_entropies}")
         else:
             plt.close(fig_entropy_combined)

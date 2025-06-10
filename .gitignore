@@ -18,3 +18,4 @@ unity_exec/*
 unity_app/*
 *_exec*/*
 ros/ros.env
+*.pdf

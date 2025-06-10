@@ -24,5 +24,3 @@ if __name__ == '__main__':
 
         mpc = NeuralMPC(run_dir=run_folder, initial_randomic=True)
         mpc.run_simulation()
-        # Optionally, plot the entropy and tree lambda trends for this run.
-        #mpc.plot_entropy_separately()

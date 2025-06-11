@@ -4,6 +4,7 @@ import tf2_ros
 import numpy as np
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Float64, Float64MultiArray, MultiArrayDimension, Int32
+import tf
 
 class RobotsPositionListener:
     def __init__(self):
@@ -17,9 +18,8 @@ class RobotsPositionListener:
 
         # Sincronizzazione
         rospy.Subscriber("/mpc_ok", Int32, self.mpc_callback)
-        self.pub_next_step = rospy.Publisher('/current_step', Int32, queue_size=1)
         self.current_step = 0
-        self.curret_ok = [0 for _ in range(self.num_robots)] # se tutti 1 step completo
+        self.curret_ok = [False] * self.num_robots # se tutti True step completo
 
         # TF
         self.tf_buffer = tf2_ros.Buffer()
@@ -30,51 +30,62 @@ class RobotsPositionListener:
         self.adjacency_pub = rospy.Publisher('/adjacency', Float64MultiArray, queue_size=1)
         self.robot_states_pub = rospy.Publisher('/robot_states', Float64MultiArray, queue_size=1)
 
+        self.init_cmd()
 
-        # Loop principale
-        self.main_loop()
-
-    # metti ha 1 l'id dell'mpc che ha fatto
-    def mpc_callback(self, msg):
-        self.curret_ok[msg.data-1] = 1
-
-    def main_loop(self):
-        rate = rospy.Rate(10)  # 100 Hz
-        while not rospy.is_shutdown():
+        rospy.spin() 
+    
+    def init_cmd(self):
+        while True: #not rospy.is_shutdown():
             positions = self.get_robot_positions()
             if positions is not None:
-                self.publish_robot_positions(positions)
+                GREEN = "\033[92m"
+                RESET = "\033[0m"
+                rospy.loginfo(f"{GREEN}NEXT STEP{RESET}")
                 A = self.compute_adjacency_matrix(positions)
                 self.publish_adjacency_matrix(A)
                 lambda2 = self.compute_lambda2(A)
                 self.lambda2_pub.publish(lambda2)
-                # rospy.loginfo_throttle(1, f"Lambda2: {lambda2:.4f}")
-                rate.sleep()
-                # ripubblica vecchi dati finche tutti non hanno calcolato
-                while(any(x == 0 for x in self.curret_ok)) and not rospy.is_shutdown():
-                    # self.publish_robot_positions(positions)
-                    # self.publish_adjacency_matrix(A)
-                    # self.lambda2_pub.publish(lambda2)
-                    rate.sleep()
-                # aggiorna a step successivo
-                self.curret_ok = [0 for _ in range(self.num_robots)] # se tutti 1 step completo
-                self.current_step += 1
-                msg = Int32()
-                msg.data = self.current_step
-                self.pub_next_step.publish(msg)
-                rate.sleep()
+                self.publish_robot_positions(positions)
+                return
+        
+    # metti ha 1 l'id dell'mpc che ha fatto
+    def mpc_callback(self, msg):
+        YELLOW = "\033[93m"
+        RESET = "\033[0m"
+        rospy.loginfo(f"{YELLOW}Received robot {msg.data}{RESET}") 
+        self.curret_ok[msg.data-1] = True
+
+        if all(self.curret_ok):
+            positions = self.get_robot_positions()
+            GREEN = "\033[92m"
+            RESET = "\033[0m"
+            rospy.loginfo(f"{GREEN}NEXT STEP{RESET}")
+            A = self.compute_adjacency_matrix(positions)
+            self.publish_adjacency_matrix(A)
+            lambda2 = self.compute_lambda2(A)
+            self.lambda2_pub.publish(lambda2)
+            self.publish_robot_positions(positions)
+
+            self.curret_ok = [False] * self.num_robots
 
 
     def get_robot_positions(self):
-        positions = np.zeros((self.num_robots, 2))
+        positions = np.zeros((self.num_robots, 3))
         for i in range(self.num_robots):
             try:
                 frame_id = f'base_link_{i+1}'
                 trans: TransformStamped = self.tf_buffer.lookup_transform('map', frame_id, rospy.Time(0))
+                (_, _, yaw) = tf.transformations.euler_from_quaternion([
+                    trans.transform.rotation.x,
+                    trans.transform.rotation.y,
+                    trans.transform.rotation.z,
+                    trans.transform.rotation.w
+                ])
                 positions[i, 0] = trans.transform.translation.x
                 positions[i, 1] = trans.transform.translation.y
+                positions[i, 2] = yaw
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-                rospy.logwarn(f"TF lookup failed for robot {i}: {e}")
+                rospy.logwarn(f"TF lookup failed for robot {i+1}: {e}")
                 return None
         return positions
 
@@ -120,15 +131,16 @@ class RobotsPositionListener:
         msg.layout.dim.append(MultiArrayDimension())
         msg.layout.dim[0].label = "robots"
         msg.layout.dim[0].size = self.num_robots
-        msg.layout.dim[0].stride = self.num_robots * 2  # 2 values per robot (x, y)
+        msg.layout.dim[0].stride = self.num_robots * 3  # 3 valori per robot
 
         msg.layout.dim.append(MultiArrayDimension())
-        msg.layout.dim[1].label = "xy"
-        msg.layout.dim[1].size = 2
-        msg.layout.dim[1].stride = 2
+        msg.layout.dim[1].label = "x_y_yaw"
+        msg.layout.dim[1].size = 3
+        msg.layout.dim[1].stride = 3
 
         msg.data = positions.flatten().tolist()
         self.robot_states_pub.publish(msg)
+
 
 
 if __name__ == '__main__':

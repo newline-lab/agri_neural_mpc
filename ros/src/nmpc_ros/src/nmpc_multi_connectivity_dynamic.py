@@ -343,9 +343,10 @@ class NeuralMPC:
     
     def d_lambda2_dx(self, positions):
         """Calcola adjacency, lambda2 e beta a partire da positions (1D: [x1,y1,...,xn,yn])."""
-        n = len(positions) // 2
-        q_flat = positions  # vettore 1D [x1, y1, ..., xn, yn]
-        q = q_flat.reshape((n, 2))     # matrice n x 2
+        n = len(positions) // 3
+        q_flat = positions             # vettore 1D [x1, y1, ..., xn, yn]
+        q_all = q_flat.reshape((n, 3)) # matrice n x 2
+        q = q_all[:,0:2]               # elimina yaw
 
         R = self.R
         sigma = np.sqrt((R ** 4) / np.log(2))
@@ -457,9 +458,9 @@ class NeuralMPC:
             opti.subject_to(opti.bounded(-3.14/4, X[5, i], 3.14 / 4))
 
             # connectivity
-            alfa = 0.8
-            if i < steps:
-                opti.subject_to(ca.dot(B0, U[0:2, i]) >= -alfa*(L20-self.epsilon))
+            # alfa = 0.8
+            # if i < steps:
+            #     opti.subject_to(ca.dot(B0, U[0:2, i]) >= -alfa*(L20-self.epsilon))
 
             # Robot-Robot Collision avoidance
             pi = X0[0:2] 
@@ -481,7 +482,7 @@ class NeuralMPC:
             opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
 
             if i < steps:
-                opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))
+                opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))                
 
         nn_batch = []
         for i in range(trees_dm.shape[0]):
@@ -612,14 +613,20 @@ class NeuralMPC:
         while mpciter < sim_time and not rospy.is_shutdown():
             # rospy.loginfo('Step: %d', mpciter)
             # Update state from the latest GPS callback.
-            while self.current_state is None and not rospy.is_shutdown() or self.robot_positions is None:
+            while self.current_state is None and not rospy.is_shutdown():
                 rospy.sleep(0.05)
             current_state = self.current_state
             current_sim_time = time.time() - sim_start_time
             self.lambda_k = self.lambda_cons
             pose_history.append(current_state)
             time_history.append(current_sim_time)
+            while not rospy.is_shutdown() and self.robot_positions is None:
+                # rospy.logerr("Ciclo")
+                rospy.sleep(0.05)
+            # if mpciter == 0:
             x_k = ca.vertcat(ca.DM(current_state), vx_k)
+            # else:
+            #     x_k = ca.vertcat(ca.DM(self.robot_positions[3*(self.n_agent-1):3*(self.n_agent-1)+3]), vx_k)
 
             # Wait until tree scores have been received.
             while self.latest_trees_scores is None and not rospy.is_shutdown():
@@ -638,28 +645,28 @@ class NeuralMPC:
 
             if self.assigned is not None and self.robot_positions is not None:
                 self.d_lambda2_dx(self.robot_positions)
-                print(self.n_agent, self.beta)
+                print(self.n_agent, ":", self.lambda2, "|", self.beta)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
                     mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, ca.DM(self.lambda2), ca.DM(self.beta), self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
-                    if self.lambda2 > self.epsilon:
-                        # Move to accomplish the task (if not completed)
-                        if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                            u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
-                    else: # backup strategy
-                        rospy.logerr(f"CONNESSIONE: comando di emergenza.")
-                        u = ca.DM.zeros((3,2))
-                        u[0:2,0] = 1/self.lambda2 * self.beta
+                    # if self.lambda2 > self.epsilon:
+                    # Move to accomplish the task (if not completed)
+                    if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
+                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
+                    # else: # backup strategy
+                    #     rospy.logerr(f"CONNESSIONE: comando di emergenza.")
+                    #     u = ca.DM.zeros((3,2))
+                    #     u[0:2,0] = 1/self.lambda2 * self.beta
+                    # u = ca.DM.zeros((3,2))
+                    # u[0:2,0] = - (self.robot_positions[2*(self.n_agent-1):2*(self.n_agent-1)+1] - np.zeros((1,2)))
 
-                # Notify current iteration done  
-                    self.mpc_step += 1
-                    msg = Int32()
-                    msg.data = self.n_agent
-                    self.ok_mpc.publish(msg)
-                    self.robot_positions = None
+                msg = Int32()
+                msg.data = self.n_agent
+                self.ok_mpc.publish(msg)
+                self.robot_positions = None
 
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.
@@ -668,6 +675,7 @@ class NeuralMPC:
                 # Compute the command pose.
                 if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
                     cmd_pose = F_(x_k, u[:, 0])
+                    # rospy.loginfo(cmd_pose)
                 else:
                     rospy.loginfo("\033[92mAgent " + str(self.n_agent) + ": done\033[0m")
 

@@ -743,25 +743,17 @@ class NeuralMPC:
         while mpciter < sim_time and not rospy.is_shutdown():
             # rospy.loginfo('Step: %d', mpciter)
             # Update state from the latest GPS callback.
-            while self.current_state is None and not rospy.is_shutdown():
+            while (self.current_state is None or self.robot_positions is None or self.traj_x is None or self.traj_y is None) and not rospy.is_shutdown():
+                if mpciter == 0 and self.robot_positions is not None and self.current_state is not None:
+                    break
                 rospy.sleep(0.05)
             current_state = self.current_state
             current_sim_time = time.time() - sim_start_time
             self.lambda_k = self.lambda_cons
             pose_history.append(current_state)
             time_history.append(current_sim_time)
-            while not rospy.is_shutdown() and (self.robot_positions is None or self.traj_x is None or self.traj_y is None):
-                # first step no traj_x and traj_y
-                if mpciter == 0 and self.robot_positions is not None:
-                    break
-                # rospy.logerr(self.n_agent, ": CICLO")
-                rospy.sleep(0.05)
-            # if mpciter == 0:
-            # x_k = ca.vertcat(ca.DM(current_state), vx_k) # double integrator
-            x_k = ca.DM(current_state) 
-            # else:
-            #     x_k = ca.vertcat(ca.DM(self.robot_positions[3*(self.n_agent-1):3*(self.n_agent-1)+3]), vx_k)
-
+            
+            x_k = ca.DM(current_state)             
             # Wait until tree scores have been received.
             while self.latest_trees_scores is None and not rospy.is_shutdown():
                 rospy.sleep(0.05)
@@ -791,8 +783,6 @@ class NeuralMPC:
                 else: # MPC step
                     # betas and lambdas based on predictions
                     lambda2s, betas = self.lambda_betas_predictions()
-                    print(lambda2s)
-                    print(betas)
                     # if self.lambda2 > self.epsilon:
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
@@ -808,6 +798,10 @@ class NeuralMPC:
                 # msg.data = self.n_agent
                 # self.ok_mpc.publish(msg)
 
+                self.robot_positions = None
+                self.traj_x = None
+                self.traj_y = None
+
                 # Sync msg
                 msg = Trajectory()
                 msg.header = Header()
@@ -816,12 +810,7 @@ class NeuralMPC:
                 msg.positions_x = x_traj[0, :].full().flatten().tolist()
                 msg.positions_y = x_traj[1, :].full().flatten().tolist()
                 self.ok_mpc.publish(msg)
-
-
                 # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
-                self.robot_positions = None
-                self.traj_x = None
-                self.traj_y = None
 
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.

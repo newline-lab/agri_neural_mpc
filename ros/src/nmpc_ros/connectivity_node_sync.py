@@ -32,8 +32,8 @@ class RobotsPositionListener:
 
         # Publisher
         self.lambda2_pub = rospy.Publisher('/lambda2', Float64, queue_size=1)
-        self.adjacency_pub = rospy.Publisher('/adjacency', Float64MultiArray, queue_size=1)
-        self.robot_states_pub = rospy.Publisher('/robot_states', Float64MultiArray, queue_size=1)
+        self.adjacency_pub = rospy.Publisher('/adjacency', Float64MultiArray, queue_size=1, latch=True)
+        self.robot_states_pub = rospy.Publisher('/robot_states', Float64MultiArray, queue_size=1, latch=True)
         self.traj_pub = rospy.Publisher('/predictions', MultiTraj, queue_size=1)
 
         self.init_cmd()

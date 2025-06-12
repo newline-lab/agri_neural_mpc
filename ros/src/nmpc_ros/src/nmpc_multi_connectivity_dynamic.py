@@ -67,8 +67,8 @@ class NeuralMPC:
         self.hidden_layers = 3
         self.nn_input_dim = 3
 
-        self.N = 3
-        self.dt = 0.1
+        self.N = 5
+        self.dt = 0.5
         self.T = self.dt * self.N
         self.nx = 3  # Represents [x, y, theta]
 
@@ -287,20 +287,42 @@ class NeuralMPC:
         y_max = np.max(tree_positions[:, 1])
         return [x_min, y_min], [x_max, y_max]
 
+    # @staticmethod
+    # def kin_model(nx, dt): # double integrator
+    #     """
+    #     Kinematic model: state X = [x, y, theta, vx, vy, omega] and control U = [ax, ay, angular_acc].
+    #     Uses simple Euler integration.
+    #     """
+    #     X = ca.MX.sym('X', nx * 2)  # 6 states
+    #     U = ca.MX.sym('U', nx)      # 3 controls
+    #     rhs = ca.vertcat(X[nx:], U)
+    #     f = ca.Function('f', [X, U], [rhs])
+    #     intg_opts = {"number_of_finite_elements": 1, "simplify": 1}
+    #     intg = ca.integrator('intg', 'rk', {'x': X, 'p': U, 'ode': f(X, U)}, 0, dt, intg_opts)
+    #     xf = intg(x0=X, p=U)['xf']
+    #     return ca.Function('F', [X, U], [xf])
+
     @staticmethod
-    def kin_model(nx, dt):
+    def kin_model(nx, dt): # single integrator
         """
-        Kinematic model: state X = [x, y, theta, vx, vy, omega] and control U = [ax, ay, angular_acc].
-        Uses simple Euler integration.
+        Kinematic model (single integrator): 
+        state X = [x, y, theta], control U = [vx, vy, omega].
+        Uses Euler integration.
         """
-        X = ca.MX.sym('X', nx * 2)  # 6 states
-        U = ca.MX.sym('U', nx)      # 3 controls
-        rhs = ca.vertcat(X[nx:], U)
+        X = ca.MX.sym('X', nx)  # [x, y, theta]
+        U = ca.MX.sym('U', nx)  # [vx, vy, omega]
+        
+        # Dynamics: derivative of state is equal to control input
+        rhs = U  # dx/dt = vx, dy/dt = vy, dtheta/dt = omega
+        
+        # Create CasADi function
         f = ca.Function('f', [X, U], [rhs])
-        intg_opts = {"number_of_finite_elements": 1, "simplify": 1}
-        intg = ca.integrator('intg', 'rk', {'x': X, 'p': U, 'ode': f(X, U)}, 0, dt, intg_opts)
-        xf = intg(x0=X, p=U)['xf']
+        
+        # Euler integration: x_{k+1} = x_k + dt * f(x_k, u_k)
+        xf = X + dt * f(X, U)
+        
         return ca.Function('F', [X, U], [xf])
+
 
     @staticmethod
     def bayes(lambda_prev, z):
@@ -400,7 +422,8 @@ class NeuralMPC:
     # ---------------------------
     def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, lambda2, beta, steps=10):
         nx_local = 3                   # For clarity in this function
-        n_state = nx_local * 2         # 6-dimensional state: [x, y, theta, vx, vy, omega]
+        # n_state = nx_local * 2         # 6-dimensional state: [x, y, theta, vx, vy, omega]
+        n_state = nx_local             # 3-dimensional state: [x, y, theta]
         n_control = nx_local           # 3-dimensional control: [ax, ay, angular_acc]
         opti = ca.Opti()
         F_ = self.kin_model(self.nx, self.dt)  # kinematic model function
@@ -427,7 +450,7 @@ class NeuralMPC:
         trees_dm = ca.DM(trees)  # Expected shape: (num_trees, 2)
 
         # Weights and safety parameters.
-        w_control = 1e-2         # Control effort weight
+        w_control = 50e-2         # Control effort weight
         w_ang = 1e-4             # Angular control weight
         w_entropy = 1e1          # Weight for final entropy
         w_attract = 1e-2         # Weight for low-entropy attraction
@@ -446,6 +469,9 @@ class NeuralMPC:
         # Not assigned trees (ID)
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
 
+        # connectivity
+        alfa = 2
+        opti.subject_to(ca.dot(B0, U[0:2, 0]) >= -alfa*(L20-self.epsilon)**3)
 
         # Loop over the prediction horizon.
         for i in range(steps+1):
@@ -454,13 +480,9 @@ class NeuralMPC:
             opti.subject_to(opti.bounded(lb[1] - 2., X[1, i], ub[1] + 2.))
             opti.subject_to(opti.bounded(-6*np.pi, X[2, i], +6*np.pi))
 
-            opti.subject_to(opti.bounded(0.0, ca.sumsqr(X[3:5, i]),4.00))
-            opti.subject_to(opti.bounded(-3.14/4, X[5, i], 3.14 / 4))
-
-            # connectivity
-            # alfa = 0.8
-            # if i < steps:
-            #     opti.subject_to(ca.dot(B0, U[0:2, i]) >= -alfa*(L20-self.epsilon))
+            # double integrator
+            # opti.subject_to(opti.bounded(0.0, ca.sumsqr(X[3:5, i]),4.00))
+            # opti.subject_to(opti.bounded(-3.14/4, X[5, i], 3.14 / 4))
 
             # Robot-Robot Collision avoidance
             pi = X0[0:2] 
@@ -582,7 +604,9 @@ class NeuralMPC:
         # Initialize robot state from the latest GPS callback.
         initial_state = self.current_state  # [x, y, theta]
         vx_k = ca.DM.zeros(self.nx)  # velocity component: [vx, vy, omega]
-        x_k = ca.vertcat(ca.DM(initial_state), vx_k)
+        # x_k = ca.vertcat(ca.DM(initial_state), vx_k) # double integrator
+        x_k = ca.DM(initial_state)
+
 
         # Containers for simulation output.
         all_trajectories = []
@@ -621,10 +645,11 @@ class NeuralMPC:
             pose_history.append(current_state)
             time_history.append(current_sim_time)
             while not rospy.is_shutdown() and self.robot_positions is None:
-                # rospy.logerr("Ciclo")
+                # rospy.logerr(self.n_agent, ": CICLO")
                 rospy.sleep(0.05)
             # if mpciter == 0:
-            x_k = ca.vertcat(ca.DM(current_state), vx_k)
+            # x_k = ca.vertcat(ca.DM(current_state), vx_k) # double integrator
+            x_k = ca.DM(current_state) 
             # else:
             #     x_k = ca.vertcat(ca.DM(self.robot_positions[3*(self.n_agent-1):3*(self.n_agent-1)+3]), vx_k)
 
@@ -645,7 +670,7 @@ class NeuralMPC:
 
             if self.assigned is not None and self.robot_positions is not None:
                 self.d_lambda2_dx(self.robot_positions)
-                print(self.n_agent, ":", self.lambda2, "|", self.beta)
+                print(self.n_agent, ":", "\033[97m" + str(self.lambda2) + "\033[0m", "|", self.beta)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
                     mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, ca.DM(self.lambda2), ca.DM(self.beta), self.mpc_horizon)
@@ -666,6 +691,7 @@ class NeuralMPC:
                 msg = Int32()
                 msg.data = self.n_agent
                 self.ok_mpc.publish(msg)
+                # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
                 self.robot_positions = None
 
                 durations.append(time.time() - step_start_time)
@@ -693,7 +719,8 @@ class NeuralMPC:
                                                     w=quaternion[3])
                 self.cmd_pose_pub.publish(cmd_pose_msg)
 
-                vx_k = cmd_pose[self.nx:]
+                # vx_k = cmd_pose[self.nx:] # double integrator
+                vx_k = u[:, 0]
                 velocity_command_log.append([current_sim_time, "MPC", vx_k[0], vx_k[1], vx_k[2]])
 
                 # Update metrics.
@@ -720,7 +747,7 @@ class NeuralMPC:
 
                 mpciter += 1
                 rospy.loginfo("Entropy: %s", entropy_k)
-                if all( v >=0.99 for v in  self.lambda_k.full().flatten()):
+                if all( v >=0.95 for v in  self.lambda_k.full().flatten()):
                     break
 
             # send lambda values

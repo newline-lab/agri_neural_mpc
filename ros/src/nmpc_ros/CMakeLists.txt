@@ -27,6 +27,7 @@ add_service_files(
 add_message_files(
   FILES
   Trajectory.msg
+  MultiTraj.msg
 )
 
 

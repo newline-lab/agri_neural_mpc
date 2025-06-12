@@ -31,6 +31,10 @@ from nmpc_ros.srv import GetTreesPoses
 # Import helper functions from sensors.py
 from nmpc_ros_package.ros_com_lib.sensors import create_path_from_mpc_prediction, create_tree_markers
 
+# Custom message for predictions
+from nmpc_ros.msg import Trajectory, MultiTraj
+from std_msgs.msg import Header
+
 # ---------------------------
 # Simple Neural Network
 # ---------------------------
@@ -148,11 +152,15 @@ class NeuralMPC:
         self.assigned = None
 
         # Sync
-        self.ok_mpc = rospy.Publisher('/mpc_ok', Int32, queue_size=1)
+        self.ok_mpc = rospy.Publisher('/mpc_ok', Trajectory, queue_size=1)
+        rospy.Subscriber("/predictions", MultiTraj, self.get_predictions)
         rospy.Subscriber("/current_step", Int32, self.next_step)
         self.current_setp = 0 # sync step
         self.mpc_step = 0     # agent i step
 
+        # Predictions
+        self.traj_x = None
+        self.traj_y = None
 
     # ---------------------------
     # Callback Functions
@@ -197,8 +205,24 @@ class NeuralMPC:
             self.neighbors_pos = ca.DM(poss)
             rate.sleep()
 
+    def get_predictions(self, msg):
+        """
+        Get robot preditictions
+        """
+        self.traj_x = [[]]  # index 0 is empty
+        self.traj_y = [[]]  # index 0 is empty
+
+        idx = 0
+        for length in msg.lengths:
+            self.traj_x.append(msg.traj_x[idx:idx+length])
+            self.traj_y.append(msg.traj_y[idx:idx+length])
+            idx += length
+        # Output: self.traj_x[i] = traj_x of robot i = 1,...,N (id=0 no robots)
+
     def next_step(self, msg):
-        "Perform next control"
+        """
+        Perform next control
+        """
         self.current_setp += 1
 
     def tree_scores_callback(self, msg):
@@ -470,7 +494,7 @@ class NeuralMPC:
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
 
         # connectivity
-        alfa = 2
+        alfa = 1
         opti.subject_to(ca.dot(B0, U[0:2, 0]) >= -alfa*(L20-self.epsilon)**3)
 
         # Loop over the prediction horizon.
@@ -688,9 +712,20 @@ class NeuralMPC:
                     # u = ca.DM.zeros((3,2))
                     # u[0:2,0] = - (self.robot_positions[2*(self.n_agent-1):2*(self.n_agent-1)+1] - np.zeros((1,2)))
 
-                msg = Int32()
-                msg.data = self.n_agent
+                # msg = Int32()
+                # msg.data = self.n_agent
+                # self.ok_mpc.publish(msg)
+
+                # Sync msg
+                msg = Trajectory()
+                msg.header = Header()
+                msg.header.stamp = rospy.Time.now()
+                msg.id = self.n_agent
+                msg.positions_x = x_traj[0, :].full().flatten().tolist()
+                msg.positions_y = x_traj[1, :].full().flatten().tolist()
                 self.ok_mpc.publish(msg)
+
+
                 # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
                 self.robot_positions = None
 

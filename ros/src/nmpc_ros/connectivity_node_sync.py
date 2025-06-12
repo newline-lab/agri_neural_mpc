@@ -5,6 +5,9 @@ import numpy as np
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Float64, Float64MultiArray, MultiArrayDimension, Int32
 import tf
+from nmpc_ros.msg import Trajectory, MultiTraj
+from std_msgs.msg import Header
+
 
 class RobotsPositionListener:
     def __init__(self):
@@ -17,9 +20,11 @@ class RobotsPositionListener:
         self.sigma = np.sqrt((self.R**4) / np.log(2))
 
         # Sincronizzazione
-        rospy.Subscriber("/mpc_ok", Int32, self.mpc_callback)
+        rospy.Subscriber("/mpc_ok", Trajectory, self.mpc_callback)
         self.current_step = 0
         self.curret_ok = [False] * self.num_robots # se tutti True step completo
+        self.traj_x = [[] for _ in range(self.num_robots)]
+        self.traj_y = [[] for _ in range(self.num_robots)]
 
         # TF
         self.tf_buffer = tf2_ros.Buffer()
@@ -29,6 +34,7 @@ class RobotsPositionListener:
         self.lambda2_pub = rospy.Publisher('/lambda2', Float64, queue_size=1)
         self.adjacency_pub = rospy.Publisher('/adjacency', Float64MultiArray, queue_size=1)
         self.robot_states_pub = rospy.Publisher('/robot_states', Float64MultiArray, queue_size=1)
+        self.traj_pub = rospy.Publisher('/predictions', MultiTraj, queue_size=1)
 
         self.init_cmd()
 
@@ -52,14 +58,20 @@ class RobotsPositionListener:
     def mpc_callback(self, msg):
         YELLOW = "\033[93m"
         RESET = "\033[0m"
-        rospy.loginfo(f"{YELLOW}Received robot {msg.data}{RESET}") 
-        self.curret_ok[msg.data-1] = True
+        rospy.loginfo(f"{YELLOW}Received robot {msg.id}{RESET}") 
+        self.curret_ok[msg.id-1] = True
+
+        self.traj_x[msg.id - 1] = msg.positions_x
+        self.traj_y[msg.id - 1] = msg.positions_y
 
         if all(self.curret_ok):
             positions = self.get_robot_positions()
             GREEN = "\033[92m"
             RESET = "\033[0m"
             rospy.loginfo(f"{GREEN}NEXT STEP{RESET}")
+
+            self.publish_trajectories()
+
             A = self.compute_adjacency_matrix(positions)
             self.publish_adjacency_matrix(A)
             lambda2 = self.compute_lambda2(A)
@@ -141,6 +153,17 @@ class RobotsPositionListener:
         msg.data = positions.flatten().tolist()
         self.robot_states_pub.publish(msg)
 
+    def publish_trajectories(self):
+        msg = MultiTraj()
+        msg.header = Header()
+        msg.header.stamp = rospy.Time.now()
+
+        # Flatten le traiettorie
+        msg.traj_x = [x for robot_x in self.traj_x for x in robot_x]
+        msg.traj_y = [y for robot_y in self.traj_y for y in robot_y]
+        msg.lengths = [len(robot_x) for robot_x in self.traj_x]  # o robot_y, sono uguali in lunghezza
+
+        self.traj_pub.publish(msg)
 
 
 if __name__ == '__main__':

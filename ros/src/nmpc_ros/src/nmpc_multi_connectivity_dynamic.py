@@ -668,7 +668,10 @@ class NeuralMPC:
             self.lambda_k = self.lambda_cons
             pose_history.append(current_state)
             time_history.append(current_sim_time)
-            while not rospy.is_shutdown() and self.robot_positions is None:
+            while not rospy.is_shutdown() and (self.robot_positions is None or self.traj_x is None or self.traj_y is None):
+                # first step no traj_x and traj_y
+                if mpciter == 0 and self.robot_positions is not None:
+                    break
                 # rospy.logerr(self.n_agent, ": CICLO")
                 rospy.sleep(0.05)
             # if mpciter == 0:
@@ -728,6 +731,8 @@ class NeuralMPC:
 
                 # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
                 self.robot_positions = None
+                self.traj_x = None
+                self.traj_y = None
 
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.

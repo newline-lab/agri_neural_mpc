@@ -391,7 +391,7 @@ class NeuralMPC:
         """Calcola adjacency, lambda2 e beta a partire da positions (1D: [x1,y1,...,xn,yn])."""
         n = len(positions) // 3
         q_flat = positions             # vettore 1D [x1, y1, ..., xn, yn]
-        q_all = q_flat.reshape((n, 3)) # matrice n x 2
+        q_all = q_flat.reshape((n, 3)) # matrice n x 3
         q = q_all[:,0:2]               # elimina yaw
 
         R = self.R
@@ -440,16 +440,14 @@ class NeuralMPC:
 
         self.beta = beta
 
-    ########################## TBD
-    def d_lambda2_dx_predicition(self, positions, adjacency):
+    def d_lambda2_dx_predicition(self, positions):
         """
         Compute lambda, nabla lambda2 given current positions and adjacency matrix
         (used for prection)
         """
-        n = len(positions) // 3
+        n = len(positions) // 2
         q_flat = positions             # vettore 1D [x1, y1, ..., xn, yn]
-        q_all = q_flat.reshape((n, 3)) # matrice n x 2
-        q = q_all[:,0:2]               # elimina yaw
+        q = q_flat.reshape((n, 2))     # matrice n x 2
 
         R = self.R
         sigma = np.sqrt((R ** 4) / np.log(2))
@@ -460,25 +458,21 @@ class NeuralMPC:
             for j in range(i + 1, n):
                 t0 = q[i] - q[j]
                 d2 = np.dot(t0, t0)  # distanza al quadrato
-                if d2 < R**2:
+                if d2 < R**2 and self.adjacency[i, j] > 0:
                     t1 = R**2 - d2
                     A_ij = self.alpha_elem * (np.exp((t1**2) / (sigma**2)) - 1)
                     A[i, j] = A[j, i] = A_ij
                 else:
                     A[i, j] = A[j, i] = 0.0
 
-        self.adjacency = A
-
-        # Costruzione Laplaciano L = D - A
         D = np.diag(np.sum(A, axis=1))
         L = D - A
-
         # Calcolo lambda2 e autovettori
         eigvals, eigvecs = np.linalg.eigh(L)
         eigvals_sorted = np.sort(eigvals)
         idx_sorted = np.argsort(eigvals)
         v2 = eigvecs[:, idx_sorted[1]] if n > 1 else np.zeros(n)
-        self.lambda2 = eigvals_sorted[1] if n > 1 else 0.0
+        lambda2 = eigvals_sorted[1] if n > 1 else 0.0
 
         # Calcolo gradiente beta_i
         beta = np.zeros(2)
@@ -495,7 +489,37 @@ class NeuralMPC:
             dadxi = -4 * t1 * exp_term / t2 * t0
             beta += dadxi * (dv ** 2)
 
-        self.beta = beta
+        return lambda2, beta
+    
+    def convert_traj(self):
+        """
+        Restituisce le posizioni di tutti gli agenti per ogni istante di tempo.
+        Output:
+            positions[t] = [x1, y1, x2, y2, ..., xN, yN] al tempo t
+                        (se un agente non ha posizione al tempo t, inserisce NaN)
+        """
+        positions = []
+        for t in range(self.N):
+            frame = []
+            for i in range(1, len(self.traj_x)):  # agenti da 1 a N
+                if t < len(self.traj_x[i]) and t < len(self.traj_y[i]):
+                    frame.append(self.traj_x[i][t])
+                    frame.append(self.traj_y[i][t])
+                else:
+                    frame.append(float('nan'))
+                    frame.append(float('nan'))
+            positions.append(frame)
+        return positions
+
+    def lambda_betas_predictions(self):
+        positions = self.convert_traj()
+        lambda2s = ca.DM(self.lambda2)
+        betas = ca.DM(self.beta)
+        for i in range(1, self.N):
+            lambda_k, beta_k = self.d_lambda2_dx_predicition(np.array(positions[i]))
+            lambda2s = ca.vertcat(lambda2s, lambda_k)
+            betas = ca.vertcat(betas, beta_k)
+        return lambda2s, betas
 
 
     # ---------------------------
@@ -550,10 +574,6 @@ class NeuralMPC:
         # Not assigned trees (ID)
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
 
-        # connectivity
-        alfa = 1
-        opti.subject_to(ca.dot(B0[0:2], U[0:2, 0]) >= -alfa*(L20[0]-self.epsilon)**3)
-
         # Loop over the prediction horizon.
         for i in range(steps+1):
             # State and input bounds.
@@ -583,6 +603,11 @@ class NeuralMPC:
             delta = X[:2, i] - trees_dm.T
             sq_dists = ca.diag(ca.mtimes(delta.T, delta))
             opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
+
+            # connectivity
+            alfa = 1
+            if i < steps:
+                opti.subject_to(ca.dot(B0[2*i:2*i+2], U[0:2, i]) >= -alfa*(L20[i]-self.epsilon)**3)
 
             if i < steps:
                 opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))                
@@ -638,7 +663,7 @@ class NeuralMPC:
                 "print_level": 0,
                 "sb": "no",
                 "mu_strategy": "monotone",
-                "max_iter": 3000
+                "max_iter": 500 #3000
             },
             "print_time": False               # Disattiva stime di tempo
         }
@@ -755,14 +780,19 @@ class NeuralMPC:
             if self.assigned is not None and self.robot_positions is not None:
                 self.d_lambda2_dx(self.robot_positions)
                 print(self.n_agent, ":", "\033[97m" + str(self.lambda2) + "\033[0m", "|", self.beta)
-                lambda2s = ca.repmat(ca.DM(self.lambda2), self.N, 1)
-                betas = ca.repmat(ca.DM(self.beta), self.N, 1)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
+                    # init betas and lambdas
+                    lambda2s = ca.repmat(ca.DM(self.lambda2), self.N, 1)
+                    betas = ca.repmat(ca.DM(self.beta), self.N, 1)
                     mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, lambda2s, betas, self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
+                    # betas and lambdas based on predictions
+                    lambda2s, betas = self.lambda_betas_predictions()
+                    print(lambda2s)
+                    print(betas)
                     # if self.lambda2 > self.epsilon:
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):

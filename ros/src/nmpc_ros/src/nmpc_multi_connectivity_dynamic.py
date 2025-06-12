@@ -440,6 +440,63 @@ class NeuralMPC:
 
         self.beta = beta
 
+    ########################## TBD
+    def d_lambda2_dx_predicition(self, positions, adjacency):
+        """
+        Compute lambda, nabla lambda2 given current positions and adjacency matrix
+        (used for prection)
+        """
+        n = len(positions) // 3
+        q_flat = positions             # vettore 1D [x1, y1, ..., xn, yn]
+        q_all = q_flat.reshape((n, 3)) # matrice n x 2
+        q = q_all[:,0:2]               # elimina yaw
+
+        R = self.R
+        sigma = np.sqrt((R ** 4) / np.log(2))
+
+        # Calcolo matrice di adiacenza A
+        A = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i + 1, n):
+                t0 = q[i] - q[j]
+                d2 = np.dot(t0, t0)  # distanza al quadrato
+                if d2 < R**2:
+                    t1 = R**2 - d2
+                    A_ij = self.alpha_elem * (np.exp((t1**2) / (sigma**2)) - 1)
+                    A[i, j] = A[j, i] = A_ij
+                else:
+                    A[i, j] = A[j, i] = 0.0
+
+        self.adjacency = A
+
+        # Costruzione Laplaciano L = D - A
+        D = np.diag(np.sum(A, axis=1))
+        L = D - A
+
+        # Calcolo lambda2 e autovettori
+        eigvals, eigvecs = np.linalg.eigh(L)
+        eigvals_sorted = np.sort(eigvals)
+        idx_sorted = np.argsort(eigvals)
+        v2 = eigvecs[:, idx_sorted[1]] if n > 1 else np.zeros(n)
+        self.lambda2 = eigvals_sorted[1] if n > 1 else 0.0
+
+        # Calcolo gradiente beta_i
+        beta = np.zeros(2)
+        i = self.n_agent-1
+        for j in range(n):
+            if i == j or A[i, j] == 0:
+                continue
+
+            dv = v2[i] - v2[j]
+            t0 = q[i] - q[j]  # vettore (2,)
+            t1 = R**2 - np.dot(t0, t0)
+            t2 = sigma**2
+            exp_term = np.exp((t1**2) / t2)
+            dadxi = -4 * t1 * exp_term / t2 * t0
+            beta += dadxi * (dv ** 2)
+
+        self.beta = beta
+
 
     # ---------------------------
     # MPC Optimization Function 
@@ -459,7 +516,7 @@ class NeuralMPC:
         # Parameter vector: initial state and tree beliefs.
         num_trees = trees.shape[0]
         num_neighbors = neighbors_positions.shape[0]
-        num_lambda2 = 1 # lambda2.shape[0]
+        num_lambda2 = lambda2.shape[0]
         num_beta = beta.shape[0]
         P0 = opti.parameter(n_state + num_trees + num_neighbors + num_lambda2 + num_beta)
         X0 = P0[: n_state]
@@ -495,7 +552,7 @@ class NeuralMPC:
 
         # connectivity
         alfa = 1
-        opti.subject_to(ca.dot(B0, U[0:2, 0]) >= -alfa*(L20-self.epsilon)**3)
+        opti.subject_to(ca.dot(B0[0:2], U[0:2, 0]) >= -alfa*(L20[0]-self.epsilon)**3)
 
         # Loop over the prediction horizon.
         for i in range(steps+1):
@@ -698,16 +755,18 @@ class NeuralMPC:
             if self.assigned is not None and self.robot_positions is not None:
                 self.d_lambda2_dx(self.robot_positions)
                 print(self.n_agent, ":", "\033[97m" + str(self.lambda2) + "\033[0m", "|", self.beta)
+                lambda2s = ca.repmat(ca.DM(self.lambda2), self.N, 1)
+                betas = ca.repmat(ca.DM(self.beta), self.N, 1)
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
-                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, ca.DM(self.lambda2), ca.DM(self.beta), self.mpc_horizon)
+                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, lambda2s, betas, self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
                     # if self.lambda2 > self.epsilon:
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), ca.DM(self.lambda2), ca.DM(self.beta)), x_dec, lam)
+                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), lambda2s, betas), x_dec, lam)
                     # else: # backup strategy
                     #     rospy.logerr(f"CONNESSIONE: comando di emergenza.")
                     #     u = ca.DM.zeros((3,2))

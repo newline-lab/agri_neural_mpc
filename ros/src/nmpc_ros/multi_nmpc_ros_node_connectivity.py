@@ -3,8 +3,8 @@ import os
 script_dir = os.path.dirname(os.path.abspath(__file__))  
 src_path = os.path.join(script_dir, "src")  
 sys.path.append(src_path)
-from nmpc_multi_connectivity_dynamic import NeuralMPC
-# from nmpc_multi_grid_test import NeuralMPC
+# from nmpc_multi_connectivity_dynamic import NeuralMPC
+from nmpc_multi_connectivity_static import NeuralMPC
 
 if __name__ == '__main__':
     # Run the simulation with the default parameters

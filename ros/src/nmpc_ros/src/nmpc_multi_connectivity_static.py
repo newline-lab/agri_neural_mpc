@@ -537,11 +537,11 @@ class NeuralMPC:
     # sostituisci lambda2 e beta con x_traj, y_traj e neigh
     # x_traj e y_traj sono le posizioni x e y di tutti i robot
     # neigh è un vettore di 0 e 1, che si usa nel vincolo di connessione per renderlo effettivo o no
-    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, lambda2, beta, steps=10):
-        nx_local = 3                   # For clarity in this function
-        # n_state = nx_local * 2         # 6-dimensional state: [x, y, theta, vx, vy, omega]
-        n_state = nx_local             # 3-dimensional state: [x, y, theta]
-        n_control = nx_local           # 3-dimensional control: [ax, ay, angular_acc]
+    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, steps=10):
+        nx_local = 3                           # For clarity in this function
+        # n_state = nx_local * 2               # 6-dimensional state: [x, y, theta, vx, vy, omega]
+        n_state = nx_local                     # 3-dimensional state: [x, y, theta]
+        n_control = nx_local                   # 3-dimensional control: [ax, ay, angular_acc]
         opti = ca.Opti()
         F_ = self.kin_model(self.nx, self.dt)  # kinematic model function
 
@@ -552,14 +552,16 @@ class NeuralMPC:
         # Parameter vector: initial state and tree beliefs.
         num_trees = trees.shape[0]
         num_neighbors = neighbors_positions.shape[0]
-        num_lambda2 = lambda2.shape[0]
-        num_beta = beta.shape[0]
-        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_lambda2 + num_beta)
+        num_x_traj = x_traj.shape[0]
+        num_y_traj = y_traj.shape[0]
+        num_span = span.shape[0]
+        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span)
         X0 = P0[: n_state]
         L0 = P0[n_state:n_state+num_trees]
         N0 = P0[n_state+num_trees:n_state+num_trees+num_neighbors]
-        L20 = P0[n_state+num_trees+num_neighbors:n_state+num_trees+num_neighbors+num_lambda2]
-        B0 = P0[n_state+num_trees+num_neighbors+num_lambda2:]
+        TX0 = P0[n_state+num_trees+num_neighbors:n_state+num_trees+num_neighbors+num_x_traj]
+        TY0 = P0[n_state+num_trees+num_neighbors+num_x_traj:n_state+num_trees+num_neighbors+num_x_traj+num_y_traj]
+        S0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj:]
         # Initialize belief evolution.
         lambda_evol = [L0]
 
@@ -567,7 +569,7 @@ class NeuralMPC:
         trees_dm = ca.DM(trees)  # Expected shape: (num_trees, 2)
 
         # Weights and safety parameters.
-        w_control = 50e-2         # Control effort weight
+        w_control = 1e-2         # Control effort weight
         w_ang = 1e-4             # Angular control weight
         w_entropy = 1e1          # Weight for final entropy
         w_attract = 1e-2         # Weight for low-entropy attraction
@@ -617,10 +619,13 @@ class NeuralMPC:
             opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
 
             # connectivity
-            alfa = 1
             if i < steps:
-                opti.subject_to(ca.dot(B0[2*i:2*i+2], U[0:2, i]) >= -alfa*(L20[i]-self.epsilon)**3)
-
+                for n in range(num_span):
+                    if n != self.n_agent-1:
+                        # opti.subject_to(( (X[0,i]-TX0[n*steps+i])**2 + (X[1,i]-TY0[n*steps+i])**2 ) <= self.R**2)
+                        opti.subject_to(ca.norm_2(ca.vertcat(X[0,i]-TX0[n*steps+i], X[1,i]-TY0[n*steps+i])) <= self.R)
+            
+            
             if i < steps:
                 opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))                
 
@@ -681,7 +686,7 @@ class NeuralMPC:
         }
         opti.solver("ipopt", options)
         # Set the parameter values.
-        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, lambda2, beta))
+        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span))
         sol = opti.solve()
 
         # Create the MPC step function for warm starting.
@@ -759,7 +764,8 @@ class NeuralMPC:
                 if mpciter == 0 and self.robot_positions is not None and self.current_state is not None:
                     break
                 rospy.sleep(0.05)
-            current_state = self.current_state
+            # current_state = self.current_state
+            current_state = self.robot_positions[3*(self.n_agent-1):3*(self.n_agent-1)+3]
             current_sim_time = time.time() - sim_start_time
             self.lambda_k = self.lambda_cons
             pose_history.append(current_state)
@@ -786,27 +792,32 @@ class NeuralMPC:
                 # print(self.n_agent, ":", "\033[97m" + str(self.lambda2) + "\033[0m", "|", self.beta)
                 self.compute_minimum_spanning_tree() 
                 print("\033[97m" + str(self.span_tree) + "\033[0m")
+                # Adjacency for
+                connections = np.where(self.span_tree > 0, 1, 0)
+                adj_dm = ca.DM(connections[self.n_agent-1])
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
-                    # init betas and lambdas
-                    lambda2s = ca.repmat(ca.DM(self.lambda2), self.N, 1)
-                    betas = ca.repmat(ca.DM(self.beta), self.N, 1)
-                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, lambda2s, betas, self.mpc_horizon)
+                    # Repeat start
+                    x_traj_flat = np.repeat(self.robot_positions[::3], self.N)
+                    y_traj_flat = np.repeat(self.robot_positions[1::3], self.N)
+                    # Convert to CasADi DM
+                    x_traj_dm = ca.DM(x_traj_flat)
+                    y_traj_dm = ca.DM(y_traj_flat)
+                    # MPC
+                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
-                    # betas and lambdas based on predictions
-                    lambda2s, betas = self.lambda_betas_predictions()
-                    # if self.lambda2 > self.epsilon:
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), lambda2s, betas), x_dec, lam)
-                    # else: # backup strategy
-                    #     rospy.logerr(f"CONNESSIONE: comando di emergenza.")
-                    #     u = ca.DM.zeros((3,2))
-                    #     u[0:2,0] = 1/self.lambda2 * self.beta
-                    # u = ca.DM.zeros((3,2))
-                    # u[0:2,0] = - (self.robot_positions[2*(self.n_agent-1):2*(self.n_agent-1)+1] - np.zeros((1,2)))
+                        # Flattening agent trajectories (excluding dummy index 0)
+                        x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj[:-1]]
+                        y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj[:-1]]
+                        # Convert to CasADi DM
+                        x_traj_dm = ca.DM(x_traj_flat)
+                        y_traj_dm = ca.DM(y_traj_flat)
+                        # MPC
+                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
 
                 # msg = Int32()
                 # msg.data = self.n_agent

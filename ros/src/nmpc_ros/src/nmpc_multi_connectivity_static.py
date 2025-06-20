@@ -689,17 +689,75 @@ class NeuralMPC:
         opti.minimize(obj)
 
         # Solver options.
+        # options = {
+        #     "ipopt": {
+        #         "tol": 1e-2,
+        #         "warm_start_init_point": "yes",
+        #         "hessian_approximation": "limited-memory",
+        #         "print_level": 0,
+        #         "sb": "no",
+        #         "mu_strategy": "monotone",
+        #         "max_iter": 3000 #3000
+        #     },
+        #     "print_time": False               # Disattiva stime di tempo
+        # }
         options = {
             "ipopt": {
-                "tol": 1e-2,
-                "warm_start_init_point": "yes",
+                # ===== VINCOLI HARD - TOLLERANZE STRETTE =====
+                "constr_viol_tol": 1e-6,        # VINCOLI MOLTO STRETTI (hard)
+                "compl_inf_tol": 1e-6,          # Complementarità stretta per vincoli
+                # ===== OTTIMALITÀ RILASSATA =====
+                "tol": 1e-2,                    # Ottimalità molto rilassata (sub-ottimo OK)
+                "dual_inf_tol": 1e-2,           # Infeasibility duale rilassata
+                # ===== FALLBACK SUB-OTTIMO =====
+                "acceptable_tol": 1e-1,            # Tolleranza emergency molto alta
+                "acceptable_constr_viol_tol": 1e-6,  # Ma vincoli sempre rispettati!
+                "acceptable_dual_inf_tol": 10,  # Duale emergency rilasciato              
+                # ===== STRATEGIA VELOCE =====
+                "mu_strategy": "monotone",      # Monotona più veloce
+                "mu_init": 1e-2,               # Valore iniziale medio
+                "mu_min": 1e-8,                
+                "barrier_tol_factor": 1,       # Fattore barriera minimo
+                # ===== HESSIANA MINIMA =====
                 "hessian_approximation": "limited-memory",
+                "limited_memory_max_history": 2,  # Storia brevissima
+                # ===== WARM START ESSENZIALE =====
+                "warm_start_init_point": "yes",
+                "warm_start_bound_push": 1e-8,
+                "warm_start_bound_frac": 1e-8,
+                "warm_start_slack_bound_push": 1e-8,
+                "warm_start_slack_bound_frac": 1e-8,
+                # ===== STEP AGGRESSIVI =====
+                "alpha_min_frac": 0.1,         # Step minimo basso per rispettare vincoli
+                "accept_after_max_steps": 1,   # Accetta dopo 1 step
+                # ===== GESTIONE BOUNDS PRECISA =====
+                "bound_push": 1e-8,            # Push bounds piccolo (vincoli hard)
+                "bound_frac": 1e-8,            # Frazione bounds piccola
+                "slack_bound_push": 1e-8,      # Slack bounds precisi
+                "slack_bound_frac": 1e-8,      
+                # ===== SCALING DISABILITATO =====
+                "nlp_scaling_method": "none",  # No scaling per velocità
+                # ===== ALGORITMI DISABILITATI =====
+                "mehrotra_algorithm": "no",    # Disabilita per velocità
+                # ===== SOLVER LINEARE VELOCE =====
+                "linear_solver": "mumps",      # Robusto e veloce
+                # ===== PERTURBAZIONI MINIME =====
+                "min_hessian_perturbation": 1e-20,
+                "first_hessian_perturbation": 1e-8,
+                # ===== EVITA RESTORATION =====
+                "expect_infeasible_problem": "no",
+                "start_with_resto": "no",
+                "required_infeasibility_reduction": 0.1,
+                # ===== OUTPUT MINIMO =====
                 "print_level": 0,
                 "sb": "no",
-                "mu_strategy": "monotone",
-                "max_iter": 3000 #3000
+                "print_timing_statistics": "no",
+                # ===== CALCOLI VELOCI =====
+                "fast_step_computation": "yes",
+                "derivative_test": "none",
+                "check_derivatives_for_naninf": "no",
             },
-            "print_time": False               # Disattiva stime di tempo
+            "print_time": False
         }
         opti.solver("ipopt", options)
         # Set the parameter values.

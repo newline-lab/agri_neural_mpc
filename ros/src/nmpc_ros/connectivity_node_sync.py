@@ -7,11 +7,13 @@ from std_msgs.msg import Float64, Float64MultiArray, MultiArrayDimension, Int32
 import tf
 from nmpc_ros.msg import Trajectory, MultiTraj
 from std_msgs.msg import Header
+import os
 
 
 class RobotsPositionListener:
     def __init__(self):
         rospy.init_node('robots_position_listener', anonymous=True)
+        rospy.on_shutdown(self.save_position_history)
 
         # Parametri
         self.num_robots = rospy.get_param('~num_robots', 3)
@@ -25,6 +27,7 @@ class RobotsPositionListener:
         self.curret_ok = [False] * self.num_robots # se tutti True step completo
         self.traj_x = [[] for _ in range(self.num_robots)]
         self.traj_y = [[] for _ in range(self.num_robots)]
+        self.history_pos = []
 
         # TF
         self.tf_buffer = tf2_ros.Buffer()
@@ -66,6 +69,7 @@ class RobotsPositionListener:
 
         if all(self.curret_ok):
             positions = self.get_robot_positions()
+            self.history_pos.append(positions)
             GREEN = "\033[92m"
             RESET = "\033[0m"
             rospy.loginfo(f"{GREEN}NEXT STEP{RESET}")
@@ -165,6 +169,19 @@ class RobotsPositionListener:
 
         self.traj_pub.publish(msg)
 
+    def save_position_history(self):
+        try:
+            if self.history_pos:
+                # Ottieni la directory del file corrente
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                file_path = os.path.join(script_dir, 'src/baselines/position_history.npy')
+                
+                # Converti in numpy array e salva
+                history_array = np.array(self.history_pos)
+                np.save(file_path, history_array)
+                rospy.loginfo(f"Position history saved to {file_path}")
+        except Exception as e:
+            rospy.logerr(f"Error saving position history: {e}")
 
 if __name__ == '__main__':
     try:

@@ -83,6 +83,7 @@ class NeuralMPC:
         self.current_state = None
 
         rospy.init_node("nmpc_node", anonymous=True, log_level=rospy.DEBUG)
+        rospy.on_shutdown(self.save_all)
 
         # agent number
         self.n_agent = rospy.get_param('~n_agent', 1) # default 1
@@ -624,7 +625,23 @@ class NeuralMPC:
                     if n != self.n_agent-1:
                         # opti.subject_to(( (X[0,i]-TX0[n*steps+i])**2 + (X[1,i]-TY0[n*steps+i])**2 ) <= self.R**2)
                         opti.subject_to(ca.norm_2(ca.vertcat(X[0,i]-TX0[n*steps+i], X[1,i]-TY0[n*steps+i])) <= self.R)
-            
+            # if i < steps:
+            #     current_pos = X[:2, i]
+            #     estimated_pos = ca.vertcat(TX0[(self.n_agent-1)*steps + i], 
+            #                             TY0[(self.n_agent-1)*steps + i])
+            #     deviation = ca.norm_2(current_pos - estimated_pos)
+
+            #     # Calcola il minimo tra tutti i (R - distance_to_neighbor)/2
+            #     min_allowed_deviation = ca.inf  # Inizializza a infinito positivo
+            #     for n in range(num_span):
+            #         if n != self.n_agent-1:
+            #             neighbor_pos = ca.vertcat(TX0[n*steps + i], TY0[n*steps + i])
+            #             distance_to_neighbor = ca.norm_2(estimated_pos - neighbor_pos)
+            #             current_deviation = (self.R - distance_to_neighbor) / 2
+            #             min_allowed_deviation = ca.fmin(min_allowed_deviation, current_deviation)
+            #     # Impone il vincolo finale
+            #     opti.subject_to(deviation <= min_allowed_deviation)
+
             
             if i < steps:
                 opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))                
@@ -680,7 +697,7 @@ class NeuralMPC:
                 "print_level": 0,
                 "sb": "no",
                 "mu_strategy": "monotone",
-                "max_iter": 500 #3000
+                "max_iter": 3000 #3000
             },
             "print_time": False               # Disattiva stime di tempo
         }
@@ -733,17 +750,17 @@ class NeuralMPC:
 
         # Containers for simulation output.
         all_trajectories = []
-        lambda_history = []
-        entropy_history = []
+        self.lambda_history = []
+        self.entropy_history = []
         durations = []
 
-        velocity_command_log = []
-        pose_history = []      # [x, y, theta] for each step
-        time_history = []      # simulation time at each step
+        self.velocity_command_log = []
+        self.pose_history = []      # [x, y, theta] for each step
+        self.time_history = []      # simulation time at each step
 
-        sim_start_time = time.time()
-        total_distance = 0.0
-        total_commands = 0
+        self.sim_start_time = time.time()
+        self.total_distance = 0.0
+        self.total_commands = 0
         sum_vx = 0.0
         sum_vy = 0.0
         sum_yaw = 0.0
@@ -766,10 +783,10 @@ class NeuralMPC:
                 rospy.sleep(0.05)
             # current_state = self.current_state
             current_state = self.robot_positions[3*(self.n_agent-1):3*(self.n_agent-1)+3]
-            current_sim_time = time.time() - sim_start_time
+            current_sim_time = time.time() - self.sim_start_time
             self.lambda_k = self.lambda_cons
-            pose_history.append(current_state)
-            time_history.append(current_sim_time)
+            self.pose_history.append(current_state)
+            self.time_history.append(current_sim_time)
             
             x_k = ca.DM(current_state)             
             # Wait until tree scores have been received.
@@ -864,7 +881,7 @@ class NeuralMPC:
 
                 # vx_k = cmd_pose[self.nx:] # double integrator
                 vx_k = u[:, 0]
-                velocity_command_log.append([current_sim_time, "MPC", vx_k[0], vx_k[1], vx_k[2]])
+                self.velocity_command_log.append([current_sim_time, "MPC", vx_k[0], vx_k[1], vx_k[2]])
 
                 # Update metrics.
                 vx_val = float(vx_k[0])
@@ -875,17 +892,17 @@ class NeuralMPC:
                 sum_yaw += yaw_val
                 trans_speed = math.sqrt(vx_val**2 + vy_val**2)
                 sum_trans_speed += trans_speed
-                total_commands += 1
+                self.total_commands += 1
 
                 curr_x = float(x_traj[0, 1])
                 curr_y = float(x_traj[1, 1])
                 distance_step = math.sqrt((curr_x - prev_x)**2 + (curr_y - prev_y)**2)
-                total_distance += distance_step
+                self.total_distance += distance_step
                 prev_x, prev_y = curr_x, curr_y
 
                 entropy_k = ca.sum1(self.entropy(self.lambda_k)).full().flatten()[0]
-                lambda_history.append(self.lambda_k.full().flatten().tolist())
-                entropy_history.append(entropy_k)
+                self.lambda_history.append(self.lambda_k.full().flatten().tolist())
+                self.entropy_history.append(entropy_k)
                 all_trajectories.append(x_traj[:self.nx, :].full())
 
                 mpciter += 1
@@ -900,16 +917,15 @@ class NeuralMPC:
             
             rate.sleep()
 
-        # ---------------------------
-        # Final Metrics Calculation and CSV Output
-        # ---------------------------
-        total_execution_time = time.time() - sim_start_time
-        avg_wp_time = total_execution_time / total_commands if total_commands > 0 else 0.0
-        avg_vx = sum_vx / total_commands if total_commands > 0 else 0.0
-        avg_vy = sum_vy / total_commands if total_commands > 0 else 0.0
-        avg_yaw = sum_yaw / total_commands if total_commands > 0 else 0.0
-        avg_trans_speed = sum_trans_speed / total_commands if total_commands > 0 else 0.0
+        return all_trajectories, self.entropy_history, self.lambda_history, durations, g_nn, self.trees_pos, lb, ub
 
+    def save_all(self):
+        """
+        Final Metrics Calculation and CSV Output
+        """
+        self.total_execution_time = time.time() - self.sim_start_time
+        self.avg_wp_time = self.total_execution_time / self.total_commands if self.total_commands > 0 else 0.0
+        
         script_dir = os.path.dirname(os.path.abspath(__file__))
         baselines_dir = os.path.join(script_dir, "baselines")
         os.makedirs(baselines_dir, exist_ok=True)
@@ -925,18 +941,18 @@ class NeuralMPC:
                 "Total Commands"
             ])
             writer.writerow([
-                total_execution_time,
-                total_distance,
-                avg_wp_time,
-                entropy_history[-1] if entropy_history else "N/A",
-                total_commands
+                self.total_execution_time,
+                self.total_distance,
+                self.avg_wp_time,
+                self.entropy_history[-1] if self.entropy_history else "N/A",
+                self.total_commands
             ])
 
         vel_csv = os.path.join(baselines_dir, f"mpc_n{self.n_agent}_{timestamp}_velocity_commands.csv")
         with open(vel_csv, mode='w', newline='') as vel_file:
             writer = csv.writer(vel_file)
             writer.writerow(["Time (s)", "Tag", "x_velocity", "y_velocity", "yaw_velocity"])
-            writer.writerows(velocity_command_log)
+            writer.writerows(self.velocity_command_log)
 
         rospy.loginfo("Performance metrics saved to %s", perf_csv)
         rospy.loginfo("Velocity command log saved to %s", vel_csv)
@@ -947,20 +963,19 @@ class NeuralMPC:
             tree_positions_flat = self.trees_pos.flatten().tolist()
             writer.writerow(["tree_positions"] + tree_positions_flat)
             header = ["time", "x", "y", "theta", "entropy"]
-            if lambda_history and len(lambda_history[0]) > 0:
-                num_trees = len(lambda_history[0])
+            if self.lambda_history and len(self.lambda_history[0]) > 0:
+                num_trees = len(self.lambda_history[0])
                 header += [f"lambda_{i}" for i in range(num_trees)]
             writer.writerow(header)
-            for i in range(len(time_history)):
-                time_val = time_history[i]
-                x, y, theta = np.array(pose_history[i]).flatten()
-                entropy_val = entropy_history[i]
-                lambda_vals = lambda_history[i]
+            for i in range(len(self.time_history)):
+                time_val = self.time_history[i]
+                x, y, theta = np.array(self.pose_history[i]).flatten()
+                entropy_val = self.entropy_history[i]
+                lambda_vals = self.lambda_history[i]
                 row = [time_val, x, y, theta, entropy_val] + lambda_vals
                 writer.writerow(row)
         rospy.loginfo("Plot data saved to %s", plot_csv)
 
-        return all_trajectories, entropy_history, lambda_history, durations, g_nn, self.trees_pos, lb, ub
 
     # ---------------------------
     # Plotting Function

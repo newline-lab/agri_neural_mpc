@@ -589,6 +589,9 @@ class NeuralMPC:
         # Not assigned trees (ID)
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
 
+        # Max vel
+        max_vel = 2
+
         # Loop over the prediction horizon.
         for i in range(steps+1):
             # State and input bounds.
@@ -610,7 +613,7 @@ class NeuralMPC:
                 opti.subject_to(opti.bounded(-ca.inf, dirs+dist , 0))
 
             if i < steps:
-                opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, i]),8.0))
+                opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, i]),max_vel**2))
                 opti.subject_to(opti.bounded(-3.14/2, U[-1, i], 3.14/2))
                 obj += w_control * ca.sumsqr(U[0:2, i]) + w_ang * ca.sumsqr(U[2, i])
 
@@ -624,7 +627,12 @@ class NeuralMPC:
                 for n in range(num_span):
                     if n != self.n_agent-1:
                         # opti.subject_to(( (X[0,i]-TX0[n*steps+i])**2 + (X[1,i]-TY0[n*steps+i])**2 ) <= self.R**2)
-                        opti.subject_to(ca.norm_2(ca.vertcat(X[0,i]-TX0[n*steps+i], X[1,i]-TY0[n*steps+i])) <= self.R)
+                        # opti.subject_to(ca.norm_2(ca.vertcat(X[0,i]-TX0[n*steps+i], X[1,i]-TY0[n*steps+i])) <= self.R)
+                        # opti.subject_to(ca.norm_2(ca.vertcat(X[0,i]-TX0[n*steps+i], X[1,i]-TY0[n*steps+i])) <= self.R - 2*self.dt*max_vel) # conservative
+                        #### Less conservative
+                        Xj = ca.vertcat(TX0[n*steps + i], TY0[n*steps + i])  
+                        # tree topology: ... + (1-span[n])*100. If span[n] = 1 then connectivity.
+                        opti.subject_to(ca.norm_2(X[:2,i] + U[:2,i] - Xj) <= self.R - self.dt * max_vel + (1-span[n])*100) #  worst case only for xj ; optimize for next step, N.B. x(k+1) = x(k) + u(k)
             # if i < steps:
             #     current_pos = X[:2, i]
             #     estimated_pos = ca.vertcat(TX0[(self.n_agent-1)*steps + i], 

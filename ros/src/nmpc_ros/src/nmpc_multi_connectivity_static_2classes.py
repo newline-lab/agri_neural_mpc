@@ -256,14 +256,15 @@ class NeuralMPC:
         lambda_curr = self.lambda_cons.full().flatten()
         # Compute maximum/minimum
         result_max = np.maximum(neighbors, lambda_curr)
-        # result_min = np.minimum(neighbors, lambda_curr)
-        # for i in range(len(result_max)):
-        #     val_max = result_max[i] - 0.5
-        #     val_min = 0.5 - result_min[i]
-        #     if val_max > val_min:
-        #         result_min[i] = result_max[i]
-        # self.lambda_cons = ca.DM(result_min)
-        self.lambda_cons = ca.DM(result_max)
+        result_min = np.minimum(neighbors, lambda_curr)
+        for i in range(len(result_max)):
+            val_max = result_max[i] - 0.5
+            val_min = 0.5 - result_min[i]
+            if val_max > val_min:
+                result_min[i] = result_max[i]
+        self.lambda_cons = ca.DM(result_min)
+        
+        # self.lambda_cons = ca.DM(result_max)
 
     # ---------------------------
     # Service Call to Get Trees Poses
@@ -632,7 +633,7 @@ class NeuralMPC:
                         #### Less conservative
                         Xj = ca.vertcat(TX0[n*steps + i], TY0[n*steps + i])  
                         # tree topology: ... + (1-span[n])*100. If span[n] = 1 then connectivity.
-                        opti.subject_to(ca.norm_2(X[:2,i] + U[:2,i] - Xj) <= self.R - self.dt * max_vel + (1-S0[n])*100) #  worst case only for xj ; optimize for next step, N.B. x(k+1) = x(k) + u(k)
+                        # opti.subject_to(ca.norm_2(X[:2,i] + U[:2,i] - Xj) <= self.R - self.dt * max_vel + (1-S0[n])*100) #  worst case only for xj ; optimize for next step, N.B. x(k+1) = x(k) + u(k)
             
             ################ Force hard constrint
             # if self.n_agent==2 and i < steps:
@@ -645,18 +646,20 @@ class NeuralMPC:
                 opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))                
 
         nn_batch = []
-        for i in range(trees_dm.shape[0]):
-            # For each tree, build NN input using the state at steps 1:steps+1.
-            delta = X[:2, 1:] - trees_dm[i, :].T
-            heading = X[2, 1:]
-            nn_batch.append(ca.horzcat(delta.T, heading.T))
+        for i in range(steps):
+            for j in range(trees_dm.shape[0]):
+                obj_j_pos = trees_dm[j, :].T
+                diff = X[:2, i + 1] - obj_j_pos
+                heading_target = X[2, i+1]
+                nn_batch.append(ca.horzcat(diff.T, heading_target))
 
         g_out = g_nn(ca.vcat([*nn_batch]))
-        # Threshold the NN output
         z_k = ca.fmax(g_out, 0.5)
+        L0_ext = ca.vcat([L0 for _ in range(steps)])
+        z_k_binary = (L0_ext>=0.5)*z_k + (L0_ext<0.5)*(1-z_k)
 
         for i in range(steps):
-            lambda_next = self.bayes(lambda_evol[-1], z_k[i::steps])
+            lambda_next = self.bayes(lambda_evol[-1], z_k_binary[i*trees_dm.shape[0]:(i+1)*trees_dm.shape[0]])
             lambda_evol.append(lambda_next)
 
         # Limited area (Cells) and attraction
@@ -683,7 +686,7 @@ class NeuralMPC:
         # Add terms to the objective.
         obj += entropy_term
         # obj += penalty_cells
-        obj += aggregation
+        # obj += aggregation
         opti.minimize(obj)
 
         # Solver options.
@@ -847,7 +850,7 @@ class NeuralMPC:
             # current_state = self.current_state
             current_state = self.robot_positions[3*(self.n_agent-1):3*(self.n_agent-1)+3]
             current_sim_time = time.time() - self.sim_start_time
-            self.lambda_k = self.lambda_cons
+            self.lambda_k =  self.lambda_cons # Commenta per togliere consenso
             self.pose_history.append(current_state)
             self.time_history.append(current_sim_time)
             
@@ -926,16 +929,16 @@ class NeuralMPC:
                 # Compute the command pose.
                 if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
                     cmd_pose = F_(x_k, u[:, 0]) # x_k + self.dt * u[:, 0]  # x_traj[:,1] # F_(x_k, u[:, 0])
-                    if self.n_agent == 2:
-                        print("====================")
-                        print("predicitions, ", x_traj_flat)
-                        print("x_k:", x_k)
-                        print("x: ", msg.positions_x)
-                        print("y: ", msg.positions_y)
-                        print("u:", u[:, 0])
-                        print("CMD pose:", cmd_pose)
-                        if np.abs(x_k[0]-msg.positions_x[0]) > 0.1:
-                            rospy.loginfo("\033[92m" + " ******** VALORI DIVERSI" + "\033[0m")
+                    # if self.n_agent == 2: # debug
+                    #     print("====================")
+                    #     print("predicitions, ", x_traj_flat)
+                    #     print("x_k:", x_k)
+                    #     print("x: ", msg.positions_x)
+                    #     print("y: ", msg.positions_y)
+                    #     print("u:", u[:, 0])
+                    #     print("CMD pose:", cmd_pose)
+                    #     if np.abs(x_k[0]-msg.positions_x[0]) > 0.1:
+                    #         rospy.loginfo("\033[92m" + " ******** VALORI DIVERSI" + "\033[0m")
                 else:
                     rospy.loginfo("\033[92mAgent " + str(self.n_agent) + ": done\033[0m")
 

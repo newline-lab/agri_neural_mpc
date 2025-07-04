@@ -39,11 +39,11 @@
 
   <group ns="agent_1">
     <!-- Launch data_association_node.py -->
-    <node name="data_association_node" pkg="nmpc_ros" type="multi_data_association_node.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay1); $0 $@' "> 
+    <node name="data_association_node" pkg="nmpc_ros" type="multi_data_association_node_2classes.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay1); $0 $@' "> 
       <param name="n_agent" value="1" />
     </node>
     <!-- Launch nmpc.py -->
-    <node name="main_node" pkg="nmpc_ros" type="multi_nmpc_ros_node_connectivity.py" output="screen">
+    <node name="main_node" pkg="nmpc_ros" type="multi_nmpc_ros_node_connectivity_2classes.py" output="screen">
       <param name="n_agent" value="1" />
       <param name="R" value="$(arg max_dist)"/>
     </node>
@@ -51,11 +51,11 @@
 
   <group ns="agent_2">
     <!-- Launch data_association_node.py -->
-    <node name="data_association_node" pkg="nmpc_ros" type="multi_data_association_node.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay2); $0 $@' "> 
+    <node name="data_association_node" pkg="nmpc_ros" type="multi_data_association_node_2classes.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay2); $0 $@' "> 
       <param name="n_agent" value="2" />
     </node>
     <!-- Launch nmpc.py -->
-    <node name="main_node" pkg="nmpc_ros" type="multi_nmpc_ros_node_connectivity.py" output="screen">
+    <node name="main_node" pkg="nmpc_ros" type="multi_nmpc_ros_node_connectivity_2classes.py" output="screen">
       <param name="n_agent" value="2" />
       <param name="R" value="$(arg max_dist)"/>
     </node>
@@ -63,11 +63,11 @@
 
   <group ns="agent_3">
     <!-- Launch data_association_node.py -->
-    <node name="data_association_node" pkg="nmpc_ros" type="multi_data_association_node.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay3); $0 $@' "> 
+    <node name="data_association_node" pkg="nmpc_ros" type="multi_data_association_node_2classes.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay3); $0 $@' "> 
       <param name="n_agent" value="3" />
     </node>
     <!-- Launch nmpc.py -->
-    <node name="main_node" pkg="nmpc_ros" type="multi_nmpc_ros_node_connectivity.py" output="screen">
+    <node name="main_node" pkg="nmpc_ros" type="multi_nmpc_ros_node_connectivity_2classes.py" output="screen">
       <param name="n_agent" value="3" />
       <param name="R" value="$(arg max_dist)"/>
     </node>

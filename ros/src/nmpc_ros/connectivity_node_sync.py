@@ -83,6 +83,9 @@ class RobotsPositionListener:
             self.publish_robot_positions(positions)
 
             self.curret_ok = [False] * self.num_robots
+            self.traj_x = [[] for _ in range(self.num_robots)]
+            self.traj_u = [[] for _ in range(self.num_robots)]
+
 
 
     def get_robot_positions(self):

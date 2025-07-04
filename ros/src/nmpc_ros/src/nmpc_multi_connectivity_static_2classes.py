@@ -388,8 +388,10 @@ class NeuralMPC:
         # p=4
         # s=1
         # return -a*(1-lambda_c) *ca.exp(-((x-x_c)**p + (y-y_c)**p)/((2.0*s)**p))
-        # Distanza
-        return a * (1-lambda_c) * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
+        # Distanza 
+        # return a * (1-lambda_c) * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
+        knowledge_term = (lambda_c>=0.5)*(1-lambda_c) + (lambda_c<0.5)*lambda_c
+        return a * knowledge_term * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
     
     def d_lambda2_dx(self, positions):
         """Calcola adjacency, lambda2 e beta a partire da positions (1D: [x1,y1,...,xn,yn])."""
@@ -686,7 +688,7 @@ class NeuralMPC:
         # Add terms to the objective.
         obj += entropy_term
         # obj += penalty_cells
-        # obj += aggregation
+        obj += aggregation
         opti.minimize(obj)
 
         # Solver options.
@@ -859,6 +861,11 @@ class NeuralMPC:
             while self.latest_trees_scores is None and not rospy.is_shutdown():
                 rospy.sleep(0.05)
             latest_trees_scores = self.latest_trees_scores.copy()
+            ######### Get detected trees
+            print("=====================\n", latest_trees_scores.T)
+            detected_trees = (latest_trees_scores != 0.5).astype(int)
+            print(detected_trees.T, "\n=====================")
+            ########
             self.lambda_k = self.bayes(self.lambda_k, latest_trees_scores)
             self.lambda_k = np.ceil(self.lambda_k*1000)/1000
             # rospy.loginfo("Current state x_k: %s", x_k)

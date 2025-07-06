@@ -19,7 +19,7 @@
   <node pkg="rostopic" type="rostopic" name="pose_publisher3" args="pub -1 /agent_3/cmd/pose geometry_msgs/Pose '{position: {x: 1.8, y: -6, z: 2.350}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}'" />
 
   <!-- Clustering -->
-  <node name="Assignment" pkg="nmpc_ros" type="kmeans.py" output="screen">
+  <node name="Assignment" pkg="nmpc_ros" type="kmeans_2classes.py" output="screen">
         <param name="n_agents" value="3" />
   </node> 
 

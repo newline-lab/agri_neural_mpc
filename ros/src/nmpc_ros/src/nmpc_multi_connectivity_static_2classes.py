@@ -24,7 +24,6 @@ from std_msgs.msg import Float32MultiArray, Int32MultiArray, Float64MultiArray, 
 from visualization_msgs.msg import MarkerArray
 from nav_msgs.msg import Path
 import tf
-from std_msgs.msg import Float32MultiArray
 
 # Service import for tree poses (as in sensors.py)
 from nmpc_ros.srv import GetTreesPoses
@@ -107,7 +106,7 @@ class NeuralMPC:
         self.pred_path_pub = rospy.Publisher("predicted_path", Path, queue_size=1)
         self.tree_markers_pub = rospy.Publisher("tree_markers", MarkerArray, queue_size=1)
         # send lambda values
-        self.lambda_pub = rospy.Publisher('lambda', Float32MultiArray, queue_size=1)
+        self.lambda_pub = rospy.Publisher('lambda', Float64MultiArray, queue_size=1)
 
         # Get tree positions from service using the sensors.py serializer logic.
         self.trees_pos = self.get_trees_poses()
@@ -136,12 +135,13 @@ class NeuralMPC:
         subscribers_net = []
         for neighbor in neighbors:
             topic = f"/agent_{neighbor}/lambda"
-            sub = rospy.Subscriber(topic, Float32MultiArray, self.consensus_lambda)
+            sub = rospy.Subscriber(topic, Float64MultiArray, self.consensus_lambda)
             subscribers_net.append(sub)
         # neighbors' positions
         self.neighbors_pos = ca.DM.zeros(2*(n_robots+1), 1) # id vicino e id+1 = posizione x e y in lista
         # Lambda consensus variables
-        self.lambda_cons = ca.DM.ones(self.trees_pos.shape[0], 1) * 0.5
+        self.lambda_cons = ca.DM.ones(self.trees_pos.shape[0], 1) * 0.5 # consensus value
+        self.latest_detection = np.zeros(self.trees_pos.shape[0]) # time last detected lambda
 
         # Start the neighbors state update thread at 30 Hz.
         self.neighbors_state_thread = threading.Thread(target=self.neighbors_state_update_thread)
@@ -252,19 +252,26 @@ class NeuralMPC:
         Callback for consensus lambda.
         """
         # Take data
-        neighbors = msg.data
-        lambda_curr = self.lambda_cons.full().flatten()
-        # Compute maximum/minimum
-        result_max = np.maximum(neighbors, lambda_curr)
-        result_min = np.minimum(neighbors, lambda_curr)
-        for i in range(len(result_max)):
-            val_max = result_max[i] - 0.5
-            val_min = 0.5 - result_min[i]
-            if val_max > val_min:
-                result_min[i] = result_max[i]
-        self.lambda_cons = ca.DM(result_min)
-        
-        # self.lambda_cons = ca.DM(result_max)
+        # neighbors = msg.data
+        # lambda_curr = self.lambda_cons.full().flatten()
+        # # Compute maximum/minimum
+        # result_max = np.maximum(neighbors, lambda_curr)
+        # result_min = np.minimum(neighbors, lambda_curr)
+        # for i in range(len(result_max)):
+        #     val_max = result_max[i] - 0.5
+        #     val_min = 0.5 - result_min[i]
+        #     if val_max > val_min:
+        #         result_min[i] = result_max[i]
+        # self.lambda_cons = ca.DM(result_min)
+
+        # Get latest detections
+        self.lambda_cons = self.lambda_k
+        new_lambdas = msg.data[:self.trees_pos.shape[0]]
+        new_times = msg.data[self.trees_pos.shape[0]:]
+        for i in range(self.trees_pos.shape[0]):
+            if self.latest_detection[i] < new_times[i]:
+                self.lambda_cons[i] = new_lambdas[i]
+                self.latest_detection[i] = new_times[i]
 
     # ---------------------------
     # Service Call to Get Trees Poses
@@ -861,10 +868,12 @@ class NeuralMPC:
             while self.latest_trees_scores is None and not rospy.is_shutdown():
                 rospy.sleep(0.05)
             latest_trees_scores = self.latest_trees_scores.copy()
-            ######### Get detected trees
+            ######### Get detected trees (time)
             print("=====================\n", latest_trees_scores.T)
-            detected_trees = (latest_trees_scores != 0.5).astype(int)
-            print(detected_trees.T, "\n=====================")
+            detected_trees = (latest_trees_scores != 0.5).astype(float)
+            times_detect = np.array(time.time() * detected_trees).flatten()
+            self.latest_detection = np.where(times_detect != 0, times_detect, self.latest_detection) # update new detections
+            print(self.latest_detection, "\n=====================")
             ########
             self.lambda_k = self.bayes(self.lambda_k, latest_trees_scores)
             self.lambda_k = np.ceil(self.lambda_k*1000)/1000
@@ -995,8 +1004,8 @@ class NeuralMPC:
                     break
 
             # send lambda values
-            lambda_msg = Float32MultiArray()
-            lambda_msg.data = self.lambda_k.full().flatten()
+            lambda_msg = Float64MultiArray()
+            lambda_msg.data = np.concatenate([self.lambda_k.full().flatten(), self.latest_detection]) # self.lambda_k.full().flatten()
             self.lambda_pub.publish(lambda_msg)
             
             rate.sleep()

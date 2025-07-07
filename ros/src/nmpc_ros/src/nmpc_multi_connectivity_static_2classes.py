@@ -580,7 +580,7 @@ class NeuralMPC:
         trees_dm = ca.DM(trees)  # Expected shape: (num_trees, 2)
 
         # Weights and safety parameters.
-        w_control = 1e-1         # Control effort weight
+        w_control = 1e-2         # Control effort weight
         w_ang = 1e-4             # Angular control weight
         w_entropy = 1e1          # Weight for final entropy
         w_attract = 1e-2         # Weight for low-entropy attraction
@@ -915,10 +915,11 @@ class NeuralMPC:
                         # Flattening agent trajectories (excluding dummy index 0)
                         x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj] #traj[:-1]]
                         y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj] #traj[:-1]]
-                        # print(self.n_agent, "=================")
-                        # print(self.n_agent, "Trajs: ", self.traj_x)
+                        print(self.n_agent, "=================")
+                        print(self.n_agent, "Trajs: ", self.traj_x)
                         # print(self.n_agent, "X: ", x_traj_flat)
-                        # print(self.n_agent, "=================")
+                        print(self.n_agent, "x_k:", x_k)
+                        print(self.n_agent, "=================")
                         # Convert to CasADi DM
                         x_traj_dm = ca.DM(x_traj_flat)
                         y_traj_dm = ca.DM(y_traj_flat)
@@ -942,6 +943,7 @@ class NeuralMPC:
                 msg.id = self.n_agent
                 msg.positions_x = x_traj[0, :].full().flatten().tolist()
                 msg.positions_y = x_traj[1, :].full().flatten().tolist()
+                msg.theta = x_traj[2, :].full().flatten().tolist()
                 self.ok_mpc.publish(msg)
                 # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
 
@@ -951,7 +953,7 @@ class NeuralMPC:
 
                 # Compute the command pose.
                 if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
-                    cmd_pose = F_(x_k, u[:, 0]) # x_k + self.dt * u[:, 0]  # x_traj[:,1] # F_(x_k, u[:, 0])
+                    cmd_pose = x_traj[:,1] # x_k + self.dt * u[:, 0]  # x_traj[:,1] # F_(x_k, u[:, 0])
                     # if self.n_agent == 2: # debug
                     #     print("====================")
                     #     print("predicitions, ", x_traj_flat)

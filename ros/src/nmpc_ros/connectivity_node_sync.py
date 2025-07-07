@@ -27,6 +27,7 @@ class RobotsPositionListener:
         self.curret_ok = [False] * self.num_robots # se tutti True step completo
         self.traj_x = [[] for _ in range(self.num_robots)]
         self.traj_y = [[] for _ in range(self.num_robots)]
+        self.thetas = [[] for _ in range(self.num_robots)]
         self.history_pos = []
 
         # TF
@@ -57,7 +58,7 @@ class RobotsPositionListener:
                 self.publish_robot_positions(positions)
                 return
         
-    # metti ha 1 l'id dell'mpc che ha fatto
+    # metti a 1 l'id dell'mpc che ha fatto
     def mpc_callback(self, msg):
         YELLOW = "\033[93m"
         RESET = "\033[0m"
@@ -66,9 +67,15 @@ class RobotsPositionListener:
 
         self.traj_x[msg.id - 1] = msg.positions_x
         self.traj_y[msg.id - 1] = msg.positions_y
+        self.thetas[msg.id - 1] = msg.theta
 
         if all(self.curret_ok):
-            positions = self.get_robot_positions()
+            # positions = self.get_robot_positions()
+            positions = np.zeros((self.num_robots, 3))
+            for i in range(self.num_robots):
+                positions[i, 0] = self.traj_x[i][1]
+                positions[i, 1] = self.traj_y[i][1]
+                positions[i, 2] = self.thetas[i][1]
             self.history_pos.append(positions)
             GREEN = "\033[92m"
             RESET = "\033[0m"

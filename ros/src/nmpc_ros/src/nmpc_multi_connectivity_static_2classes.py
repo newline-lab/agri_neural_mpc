@@ -580,7 +580,7 @@ class NeuralMPC:
         trees_dm = ca.DM(trees)  # Expected shape: (num_trees, 2)
 
         # Weights and safety parameters.
-        w_control = 1e-2         # Control effort weight
+        w_control = 1e-1         # Control effort weight
         w_ang = 1e-4             # Angular control weight
         w_entropy = 1e1          # Weight for final entropy
         w_attract = 1e-2         # Weight for low-entropy attraction
@@ -628,9 +628,9 @@ class NeuralMPC:
                 obj += w_control * ca.sumsqr(U[0:2, i]) + w_ang * ca.sumsqr(U[2, i])
 
             # Collision avoidance: ensure safety margin from trees.
-            delta = X[:2, i] - trees_dm.T
-            sq_dists = ca.diag(ca.mtimes(delta.T, delta))
-            opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
+            # delta = X[:2, i] - trees_dm.T
+            # sq_dists = ca.diag(ca.mtimes(delta.T, delta))
+            # opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
 
             # connectivity
             if i < steps:
@@ -640,10 +640,10 @@ class NeuralMPC:
                         # opti.subject_to(ca.norm_2(ca.vertcat(X[0,i]-TX0[n*steps+i], X[1,i]-TY0[n*steps+i])) <= self.R)
                         # opti.subject_to(ca.norm_2(ca.vertcat(X[0,i]-TX0[n*steps+i], X[1,i]-TY0[n*steps+i])) <= self.R - 2*self.dt*max_vel) # conservative
                         #### Less conservative
-                        Xj = ca.vertcat(TX0[n*steps + i], TY0[n*steps + i])  
+                        Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i + 1]) 
                         # tree topology: ... + (1-span[n])*100. If span[n] = 1 then connectivity.
-                        # opti.subject_to(ca.norm_2(X[:2,i] + U[:2,i] - Xj) <= self.R - self.dt * max_vel + (1-S0[n])*100) #  worst case only for xj ; optimize for next step, N.B. x(k+1) = x(k) + u(k)
-            
+                        opti.subject_to(ca.norm_2(X[:2,i] + U[:2,i] - Xj) <= self.R - self.dt * max_vel) # + (1-S0[n])*100) #  worst case only for xj ; optimize for next step, N.B. x(k+1) = x(k) + u(k)                        
+
             ################ Force hard constrint
             # if self.n_agent==2 and i < steps:
             #     opti.subject_to(U[0,i] == 0.3 / self.dt)
@@ -863,17 +863,19 @@ class NeuralMPC:
             self.pose_history.append(current_state)
             self.time_history.append(current_sim_time)
             
-            x_k = ca.DM(current_state)          
+            x_k = ca.DM(current_state)  
+            # print(self.n_agent, ", x_k: ",x_k)        
+            # print(self.n_agent, ", state: ",self.current_state)        
             # Wait until tree scores have been received.
             while self.latest_trees_scores is None and not rospy.is_shutdown():
                 rospy.sleep(0.05)
             latest_trees_scores = self.latest_trees_scores.copy()
             ######### Get detected trees (time)
-            print("=====================\n", latest_trees_scores.T)
+            # print("=====================\n", latest_trees_scores.T)
             detected_trees = (latest_trees_scores != 0.5).astype(float)
             times_detect = np.array(time.time() * detected_trees).flatten()
             self.latest_detection = np.where(times_detect != 0, times_detect, self.latest_detection) # update new detections
-            print(self.latest_detection, "\n=====================")
+            # print(self.latest_detection, "\n=====================")
             ########
             self.lambda_k = self.bayes(self.lambda_k, latest_trees_scores)
             self.lambda_k = np.ceil(self.lambda_k*1000)/1000
@@ -890,15 +892,16 @@ class NeuralMPC:
                 self.d_lambda2_dx(self.robot_positions)
                 # print(self.n_agent, ":", "\033[97m" + str(self.lambda2) + "\033[0m", "|", self.beta)
                 self.compute_minimum_spanning_tree() 
-                print("\033[97m" + str(self.span_tree) + "\033[0m")
+                if self.n_agent==1:
+                    print("\033[97m" + str(self.span_tree) + "\033[0m")
                 # Adjacency for
                 connections = np.where(self.span_tree > 0, 1, 0)
                 adj_dm = ca.DM(connections[self.n_agent-1])
                 step_start_time = time.time()
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
                     # Repeat start
-                    x_traj_flat = np.repeat(self.robot_positions[::3], self.N)
-                    y_traj_flat = np.repeat(self.robot_positions[1::3], self.N)
+                    x_traj_flat = np.repeat(self.robot_positions[::3], self.N+1)
+                    y_traj_flat = np.repeat(self.robot_positions[1::3], self.N+1)
                     # Convert to CasADi DM
                     x_traj_dm = ca.DM(x_traj_flat)
                     y_traj_dm = ca.DM(y_traj_flat)
@@ -910,14 +913,18 @@ class NeuralMPC:
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
                         # Flattening agent trajectories (excluding dummy index 0)
-                        x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj[:-1]]
-                        y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj[:-1]]
+                        x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj] #traj[:-1]]
+                        y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj] #traj[:-1]]
+                        # print(self.n_agent, "=================")
+                        # print(self.n_agent, "Trajs: ", self.traj_x)
+                        # print(self.n_agent, "X: ", x_traj_flat)
+                        # print(self.n_agent, "=================")
                         # Convert to CasADi DM
                         x_traj_dm = ca.DM(x_traj_flat)
                         y_traj_dm = ca.DM(y_traj_flat)
                         # MPC
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
-                        # mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                        # u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
+                        mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
 
 
                 # msg = Int32()

@@ -915,11 +915,11 @@ class NeuralMPC:
                         # Flattening agent trajectories (excluding dummy index 0)
                         x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj] #traj[:-1]]
                         y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj] #traj[:-1]]
-                        print(self.n_agent, "=================")
-                        print(self.n_agent, "Trajs: ", self.traj_x)
-                        # print(self.n_agent, "X: ", x_traj_flat)
-                        print(self.n_agent, "x_k:", x_k)
-                        print(self.n_agent, "=================")
+                        # print(self.n_agent, "=================")
+                        # print(self.n_agent, "Trajs: ", self.traj_x)
+                        # # print(self.n_agent, "X: ", x_traj_flat)
+                        # print(self.n_agent, "x_k:", x_k)
+                        # print(self.n_agent, "=================")
                         # Convert to CasADi DM
                         x_traj_dm = ca.DM(x_traj_flat)
                         y_traj_dm = ca.DM(y_traj_flat)

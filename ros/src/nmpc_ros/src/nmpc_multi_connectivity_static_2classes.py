@@ -661,7 +661,7 @@ class NeuralMPC:
                 dd = ca.norm_2(X[:2,0]-Xj)
                 d_p = self.R - dd
                 epsilon = self.dt * max_vel
-                max_value = (d_p-epsilon)/self.dt
+                max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
                 # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),max_value**2))
                 opti.subject_to(opti.bounded(-max_value/1.414, U[0, 0],max_value/1.414))
                 opti.subject_to(opti.bounded(-max_value/1.414, U[1, 0],max_value/1.414))

@@ -663,7 +663,7 @@ class NeuralMPC:
         for i in range(steps):
             for n in range(num_span):
                 if n != self.n_agent-1:
-                    Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i+  1]) 
+                    Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i +  1]) 
                     dd = ca.norm_2(X[:2,i]-Xj)
                     d_p = self.R - dd
                     epsilon = self.dt * max_vel
@@ -672,6 +672,11 @@ class NeuralMPC:
                     opti.subject_to(opti.bounded(-max_value/1.414, U[0, i],max_value/1.414))
                     opti.subject_to(opti.bounded(-max_value/1.414, U[1, i],max_value/1.414))
                     # obj -= 0.5 * ca.log(max_value**2 - ca.sumsqr(U[0:2, 0]) + 0.1)
+
+                    # scavalla comunuqe...
+                    # Xi = ca.vertcat(TX0[(self.n_agent-1)*(steps+1) + i + 1], TY0[(self.n_agent-1)*(steps+1) + i +  1])
+                    # opti.subject_to(ca.sumsqr(X[:2,i]-Xi) <= ( self.R - ca.norm_2(Xi-Xj) )**2/4)
+
 
         nn_batch = []
         for i in range(steps):

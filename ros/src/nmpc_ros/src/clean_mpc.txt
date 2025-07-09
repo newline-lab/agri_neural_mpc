@@ -1,0 +1,214 @@
+def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, steps=10):
+    # Costanti e dimensioni
+    n_state, n_control = 3, 3
+    num_trees = trees.shape[0]
+    num_neighbors = neighbors_positions.shape[0]
+    num_x_traj = x_traj.shape[0]
+    num_y_traj = y_traj.shape[0]
+    num_span = span.shape[0]
+    max_vel = 2
+    safe_distance = 1
+    
+    # Parametri weights
+    w_control, w_ang, w_entropy, w_attract = 1e-2, 1e-4, 1e1, 1e-2
+    
+    # Pre-computazioni
+    trees_dm = ca.DM(trees)
+    not_assigned_tree = [i for i in range(num_trees) if i not in assigned_tree]
+    F_ = self.kin_model(self.nx, self.dt)
+    
+    # Setup Opti
+    opti = ca.Opti()
+    
+    # Variabili di decisione
+    X = opti.variable(n_state, steps + 1)
+    U = opti.variable(n_control, steps)
+    
+    # Parametri (vettore singolo)
+    param_size = n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span
+    P0 = opti.parameter(param_size)
+    
+    # Parsing efficiente dei parametri
+    idx = 0
+    X0 = P0[idx:idx+n_state]; idx += n_state
+    L0 = P0[idx:idx+num_trees]; idx += num_trees
+    N0 = P0[idx:idx+num_neighbors]; idx += num_neighbors
+    TX0 = P0[idx:idx+num_x_traj]; idx += num_x_traj
+    TY0 = P0[idx:idx+num_y_traj]; idx += num_y_traj
+    S0 = P0[idx:]
+    
+    # Vincolo iniziale
+    opti.subject_to(X[:, 0] == X0)
+    
+    # Pre-computazione delle matrici per bounds
+    lb_extended = ca.repmat(ca.vertcat(lb[0]-4, lb[1]-2, -6*ca.pi), 1, steps+1)
+    ub_extended = ca.repmat(ca.vertcat(ub[0]+4, ub[1]+2, +6*ca.pi), 1, steps+1)
+    
+    # Vincoli vectorizzati sui bounds degli stati
+    opti.subject_to(ca.vec(X) >= ca.vec(lb_extended))
+    opti.subject_to(ca.vec(X) <= ca.vec(ub_extended))
+    
+    # Vincoli di controllo vectorizzati
+    U_mag_sq = ca.sumsqr(U[:2, :])
+    opti.subject_to(ca.vec(U_mag_sq) <= max_vel**2)
+    opti.subject_to(ca.vec(U[2, :]) >= -ca.pi/2)
+    opti.subject_to(ca.vec(U[2, :]) <= ca.pi/2)
+    
+    # Dinamica vectorizzata
+    X_next = ca.horzcat(*[F_(X[:, i], U[:, i]) for i in range(steps)])
+    opti.subject_to(ca.vec(X[:, 1:]) == ca.vec(X_next))
+    
+    # Collision avoidance con trees (vectorizzato)
+    for i in range(steps + 1):
+        delta = X[:2, i] - trees_dm.T
+        sq_dists = ca.sum1(delta**2)
+        opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
+    
+    # Robot-Robot collision avoidance (ottimizzato)
+    pi = X0[:2]
+    for i in range(steps + 1):
+        for n in self.neighbors_id:
+            pj = N0[2*n:2*n+2]
+            pij = pj - pi
+            dirs = ca.dot(X[:2, i] - (pi + pj) / 2, pij)
+            dist = 0.3 * ca.norm_2(pij)
+            opti.subject_to(dirs + dist <= 0)
+    
+    # Connectivity constraints (primo step)
+    for n in range(num_span):
+        if n != self.n_agent - 1:
+            Xj = ca.vertcat(TX0[n*(steps+1) + 1], TY0[n*(steps+1) + 1])
+            dd = ca.norm_2(X[:2, 0] - Xj)
+            d_p = self.R - dd
+            epsilon = self.dt * max_vel
+            max_value = (d_p - epsilon) / self.dt
+            
+            opti.subject_to(U[0, 0] >= -max_value/1.414)
+            opti.subject_to(U[0, 0] <= max_value/1.414)
+            opti.subject_to(U[1, 0] >= -max_value/1.414)
+            opti.subject_to(U[1, 0] <= max_value/1.414)
+    
+    # Neural network processing (batch ottimizzato)
+    nn_inputs = []
+    for i in range(steps):
+        pos_diff = X[:2, i + 1] - trees_dm.T  # Broadcasting
+        heading = ca.repmat(X[2, i + 1], 1, num_trees)
+        nn_inputs.append(ca.horzcat(pos_diff.T, heading.T))
+    
+    nn_batch = ca.vcat(nn_inputs)
+    g_out = g_nn(nn_batch)
+    z_k = ca.fmax(g_out, 0.5)
+    
+    # Belief evolution (vectorizzato)
+    lambda_evol = [L0]
+    L0_extended = ca.repmat(L0, steps, 1)
+    z_k_binary = ca.if_else(L0_extended >= 0.5, z_k, 1 - z_k)
+    
+    for i in range(steps):
+        start_idx = i * num_trees
+        end_idx = (i + 1) * num_trees
+        lambda_next = self.bayes(lambda_evol[-1], z_k_binary[start_idx:end_idx])
+        lambda_evol.append(lambda_next)
+    
+    # Objective function (vectorizzato)
+    # 1. Control effort
+    obj_control = w_control * ca.sum1(ca.sumsqr(U[:2, :])) + w_ang * ca.sum1(ca.sumsqr(U[2, :]))
+    
+    # 2. Aggregation term (vectorizzato)
+    obj_aggregation = 0
+    lambda_matrix = ca.horzcat(*lambda_evol)
+    for a_a in assigned_tree:
+        for i in range(steps + 1):
+            obj_aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_matrix[:, i], idx=a_a, a=0.1)
+    
+    # 3. Entropy term (vectorizzato e mascherato)
+    lambda_future = ca.horzcat(*lambda_evol[1:])
+    entropy_future = self.entropy(ca.vec(lambda_future))
+    
+    # Maschera per assigned trees
+    mask = ca.DM.zeros(num_trees * steps, 1)
+    exp_weights = ca.DM.zeros(num_trees * steps, 1)
+    
+    for step in range(steps):
+        for tree_idx in assigned_tree:
+            idx = tree_idx + step * num_trees
+            mask[idx] = 1
+            exp_weights[idx] = ca.exp(-2 * step)
+    
+    obj_entropy = ca.sum1((mask * exp_weights) * entropy_future) * w_entropy
+    
+    # Objective totale
+    obj_total = obj_control + obj_aggregation + obj_entropy
+    opti.minimize(obj_total)
+    
+    # Solver options ottimizzate
+    options = {
+        "ipopt": {
+            "constr_viol_tol": 1e-6,
+            "compl_inf_tol": 1e-6,
+            "tol": 1e-2,
+            "dual_inf_tol": 1e-2,
+            "acceptable_tol": 1e-1,
+            "acceptable_constr_viol_tol": 1e-6,
+            "acceptable_dual_inf_tol": 10,
+            "mu_strategy": "monotone",
+            "mu_init": 1e-2,
+            "mu_min": 1e-8,
+            "barrier_tol_factor": 1,
+            "hessian_approximation": "limited-memory",
+            "limited_memory_max_history": 2,
+            "warm_start_init_point": "yes",
+            "warm_start_bound_push": 1e-8,
+            "warm_start_bound_frac": 1e-8,
+            "warm_start_slack_bound_push": 1e-8,
+            "warm_start_slack_bound_frac": 1e-8,
+            "alpha_min_frac": 0.1,
+            "accept_after_max_steps": 1,
+            "bound_push": 1e-8,
+            "bound_frac": 1e-8,
+            "slack_bound_push": 1e-8,
+            "slack_bound_frac": 1e-8,
+            "nlp_scaling_method": "none",
+            "mehrotra_algorithm": "no",
+            "linear_solver": "mumps",
+            "min_hessian_perturbation": 1e-20,
+            "first_hessian_perturbation": 1e-8,
+            "expect_infeasible_problem": "no",
+            "start_with_resto": "no",
+            "required_infeasibility_reduction": 0.1,
+            "print_level": 0,
+            "sb": "no",
+            "print_timing_statistics": "no",
+            "fast_step_computation": "yes",
+            "derivative_test": "none",
+            "check_derivatives_for_naninf": "no",
+        },
+        "print_time": False
+    }
+    
+    opti.solver("ipopt", options)
+    
+    # Set parameter values
+    param_values = ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span)
+    opti.set_value(P0, param_values)
+    
+    # Solve
+    sol = opti.solve()
+    
+    # Check solution
+    stats = sol.stats()
+    status = stats['return_status']
+    success_states = ['Solve_Succeeded', 'Solved_To_Acceptable_Level']
+    if status not in success_states:
+        rospy.logerr(f"Agent {self.n_agent} - Solver failed: {status}")
+    
+    # Create MPC step function
+    inputs = [P0, opti.x, opti.lam_g]
+    outputs = [U[:, 0], X, opti.x, opti.lam_g]
+    mpc_step = opti.to_function("mpc_step", inputs, outputs)
+    
+    return (mpc_step,
+            ca.DM(sol.value(U[:, 0])),
+            ca.DM(sol.value(X)),
+            ca.DM(sol.value(opti.x)),
+            ca.DM(sol.value(opti.lam_g)))

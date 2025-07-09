@@ -560,6 +560,11 @@ class NeuralMPC:
         X = opti.variable(n_state, steps + 1)
         U = opti.variable(n_control, steps)
 
+        x_init_guess = ca.repmat(x0, 1, steps + 1) # Ripete x0 per tutti gli stati della traiettoria
+        u_init_guess = ca.DM.zeros(n_control, steps) # Controlli iniziali a zero
+        opti.set_initial(X, x_init_guess)
+        opti.set_initial(U, u_init_guess)
+
         # Parameter vector: initial state and tree beliefs.
         num_trees = trees.shape[0]
         num_neighbors = neighbors_positions.shape[0]
@@ -655,16 +660,18 @@ class NeuralMPC:
 
         # Connectivity first step
         # idea: dT * ||u|| <= R - || xi0 - xj0 || - dT * U_max
-        for n in range(num_span):
-            if n != self.n_agent-1:
-                Xj = ca.vertcat(TX0[n*(steps+1) + 1], TY0[n*(steps+1) + 1]) 
-                dd = ca.norm_2(X[:2,0]-Xj)
-                d_p = self.R - dd
-                epsilon = self.dt * max_vel
-                max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
-                # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),max_value**2))
-                opti.subject_to(opti.bounded(-max_value/1.414, U[0, 0],max_value/1.414))
-                opti.subject_to(opti.bounded(-max_value/1.414, U[1, 0],max_value/1.414))
+        for i in range(steps):
+            for n in range(num_span):
+                if n != self.n_agent-1:
+                    Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i+  1]) 
+                    dd = ca.norm_2(X[:2,i]-Xj)
+                    d_p = self.R - dd
+                    epsilon = self.dt * max_vel
+                    max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
+                    # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),max_value**2))
+                    opti.subject_to(opti.bounded(-max_value/1.414, U[0, i],max_value/1.414))
+                    opti.subject_to(opti.bounded(-max_value/1.414, U[1, i],max_value/1.414))
+                    # obj -= 0.5 * ca.log(max_value**2 - ca.sumsqr(U[0:2, 0]) + 0.1)
 
         nn_batch = []
         for i in range(steps):

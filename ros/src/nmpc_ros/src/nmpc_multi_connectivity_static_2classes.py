@@ -560,10 +560,10 @@ class NeuralMPC:
         X = opti.variable(n_state, steps + 1)
         U = opti.variable(n_control, steps)
 
-        x_init_guess = ca.repmat(x0, 1, steps + 1) # Ripete x0 per tutti gli stati della traiettoria
-        u_init_guess = ca.DM.zeros(n_control, steps) # Controlli iniziali a zero
-        opti.set_initial(X, x_init_guess)
-        opti.set_initial(U, u_init_guess)
+        # x_init_guess = ca.repmat(x0, 1, steps + 1) # Ripete x0 per tutti gli stati della traiettoria
+        # u_init_guess = ca.DM.zeros(n_control, steps) # Controlli iniziali a zero
+        # opti.set_initial(X, x_init_guess)
+        # opti.set_initial(U, u_init_guess)
 
         # Parameter vector: initial state and tree beliefs.
         num_trees = trees.shape[0]
@@ -658,9 +658,9 @@ class NeuralMPC:
                 # opti.subject_to(X[:, i + 1] == X[:, i] + self.dt * U[:, i]) #F_(X[:, i], U[:, i]))                
                 opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))                
 
-        # Connectivity first step
+        # Connectivity FIRST step
         # idea: dT * ||u|| <= R - || xi0 - xj0 || - dT * U_max
-        for i in range(steps):
+        for i in range(1):
             for n in range(num_span):
                 if n != self.n_agent-1:
                     Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i +  1]) 
@@ -668,15 +668,17 @@ class NeuralMPC:
                     d_p = self.R - dd
                     epsilon = self.dt * max_vel
                     max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
-                    # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),max_value**2))
-                    opti.subject_to(opti.bounded(-max_value/1.414, U[0, i],max_value/1.414))
-                    opti.subject_to(opti.bounded(-max_value/1.414, U[1, i],max_value/1.414))
+                    effective_max_radius = ca.fmax(0.0, max_value)
+                    opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),effective_max_radius**2))
+                    # opti.subject_to(opti.bounded(-max_value/1.414, U[0, i],max_value/1.414))
+                    # opti.subject_to(opti.bounded(-max_value/1.414, U[1, i],max_value/1.414))
                     # obj -= 0.5 * ca.log(max_value**2 - ca.sumsqr(U[0:2, 0]) + 0.1)
 
                     # scavalla comunuqe...
                     # Xi = ca.vertcat(TX0[(self.n_agent-1)*(steps+1) + i + 1], TY0[(self.n_agent-1)*(steps+1) + i +  1])
-                    # opti.subject_to(ca.sumsqr(X[:2,i]-Xi) <= ( self.R - ca.norm_2(Xi-Xj) )**2/4)
-
+                    # diff_con = self.R - ca.norm_2(Xi-Xj)
+                    # effective_max_radius = ca.fmax(0.0, diff_con)
+                    # opti.subject_to(opti.bounded(0.0, ca.sumsqr(X[:2,i]-Xi), effective_max_radius**2/4))
 
         nn_batch = []
         for i in range(steps):
@@ -722,7 +724,7 @@ class NeuralMPC:
         obj += aggregation
         opti.minimize(obj)
 
-        # Solver options.
+        # Solver options
         # options = {
         #     "ipopt": {
         #         "tol": 1e-2,
@@ -793,6 +795,14 @@ class NeuralMPC:
             },
             "print_time": False
         }
+        # options = {
+        #     "ipopt": {
+        #         "hessian_approximation": "limited-memory",
+        #         "print_level": 0,
+        #         "mu_strategy": "monotone",
+        #     },
+        #     "print_time": False               # Disattiva stime di tempo
+        # }
         opti.solver("ipopt", options)
         # Set the parameter values.
         opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span))

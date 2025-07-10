@@ -708,7 +708,7 @@ class NeuralMPC:
 
         # Compute entropy terms for the objective.
         entropy_future = self.entropy(ca.vcat([*lambda_evol[1:]]))
-        entropy_term = ca.sum1( ca.vcat([ca.exp(-2*i)*ca.DM.ones(num_trees) for i in range(steps)]) * entropy_future) * w_entropy
+        # entropy_term = ca.sum1( ca.vcat([ca.exp(-2*i)*ca.DM.ones(num_trees) for i in range(steps)]) * entropy_future) * w_entropy
         #--------------------------- Annulla la funzione degli alberi che non mi interessano
         mask = ca.DM.zeros(num_trees * steps, 1)
         for step in range(steps):
@@ -716,7 +716,8 @@ class NeuralMPC:
                 idx = i + step * num_trees  # indices step successivi
                 mask[idx] = 1
         exp_weights = ca.vcat([ca.exp(-2*i) * ca.DM.ones(num_trees, 1) for i in range(steps)])
-        entropy_term = ca.sum1((mask * exp_weights) * entropy_future) * w_entropy
+        # entropy_term = ca.sum1((mask * exp_weights) * entropy_future) * w_entropy
+        entropy_term = ca.logsumexp((mask * exp_weights) * entropy_future) * w_entropy
         #---------------------------        
         # Add terms to the objective.
         obj += entropy_term

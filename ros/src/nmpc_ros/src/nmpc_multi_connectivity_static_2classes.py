@@ -589,7 +589,7 @@ class NeuralMPC:
         w_ang = 1e-4             # Angular control weight
         w_entropy = 1e1          # Weight for final entropy
         w_attract = 1e-2         # Weight for low-entropy attraction
-        safe_distance = 1      # Safety margin (meters)
+        safe_distance = 1        # Safety margin (meters)
 
         # Initialize the objective.
         obj = 0
@@ -660,7 +660,7 @@ class NeuralMPC:
 
         # Connectivity FIRST step
         # idea: dT * ||u|| <= R - || xi0 - xj0 || - dT * U_max
-        for i in range(1):
+        for i in range(steps):
             for n in range(num_span):
                 if n != self.n_agent-1:
                     Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i +  1]) 
@@ -668,7 +668,7 @@ class NeuralMPC:
                     d_p = self.R - dd
                     epsilon = self.dt * max_vel
                     max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
-                    effective_max_radius = ca.fmax(0.0, max_value)
+                    effective_max_radius = ca.fmax(0.0, max_value - 1e-2)
                     opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),effective_max_radius**2))
                     # opti.subject_to(opti.bounded(-max_value/1.414, U[0, i],max_value/1.414))
                     # opti.subject_to(opti.bounded(-max_value/1.414, U[1, i],max_value/1.414))
@@ -677,7 +677,7 @@ class NeuralMPC:
                     # scavalla comunuqe...
                     # Xi = ca.vertcat(TX0[(self.n_agent-1)*(steps+1) + i + 1], TY0[(self.n_agent-1)*(steps+1) + i +  1])
                     # diff_con = self.R - ca.norm_2(Xi-Xj)
-                    # effective_max_radius = ca.fmax(0.0, diff_con)
+                    # effective_max_radius = ca.fmax(0.0, diff_con-1e-2)
                     # opti.subject_to(opti.bounded(0.0, ca.sumsqr(X[:2,i]-Xi), effective_max_radius**2/4))
 
         nn_batch = []
@@ -744,8 +744,8 @@ class NeuralMPC:
                 "constr_viol_tol": 1e-6,        # VINCOLI MOLTO STRETTI (hard)
                 "compl_inf_tol": 1e-6,          # Complementarità stretta per vincoli
                 # ===== OTTIMALITÀ RILASSATA =====
-                "tol": 1e-2,                    # Ottimalità molto rilassata (sub-ottimo OK)
-                "dual_inf_tol": 1e-2,           # Infeasibility duale rilassata
+                "tol": 1e-6,                    # Ottimalità molto rilassata (sub-ottimo OK)
+                "dual_inf_tol": 1e-6,           # Infeasibility duale rilassata
                 # ===== FALLBACK SUB-OTTIMO =====
                 "acceptable_tol": 1e-1,            # Tolleranza emergency molto alta
                 "acceptable_constr_viol_tol": 1e-6,  # Ma vincoli sempre rispettati!

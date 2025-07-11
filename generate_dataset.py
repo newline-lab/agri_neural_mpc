@@ -18,7 +18,7 @@ from utils.torch_utils import select_device, time_synchronized
 from utils.datasets import letterbox
 
 # Configuration
-is_ripe = True
+is_ripe = False
 polar = False
 fixedView = False
 
@@ -46,7 +46,6 @@ def run_detection():
     
     latest_folder = find_latest_folder(base_dir)
     print(f"Processing images in: {latest_folder}")
-
     # Input/output paths
     input_csv_path = glob.glob(os.path.join(latest_folder, "*.csv"))[0]
     output_image_dir = os.path.join(latest_folder, "detections")

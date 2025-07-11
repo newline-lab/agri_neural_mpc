@@ -505,7 +505,11 @@ class NeuralMPC:
         return lambda2, beta
     
     def compute_minimum_spanning_tree(self):
-        mst_sparse = minimum_spanning_tree(self.adjacency)
+        # Invert A because it is reverse-weighted (for min span tree)
+        inverted_adjacency = np.copy(self.adjacency)
+        non_zero_elements = inverted_adjacency != 0
+        inverted_adjacency[non_zero_elements] = 1.0 / inverted_adjacency[non_zero_elements]
+        mst_sparse = minimum_spanning_tree(inverted_adjacency)
         self.span_tree = mst_sparse.toarray()
         # Make it symmetric matrix 
         # (The higher the value the higher, the lower the distance)
@@ -664,12 +668,21 @@ class NeuralMPC:
             for n in range(num_span):
                 if n != self.n_agent-1:
                     Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i +  1]) 
-                    dd = ca.norm_2(X[:2,i]-Xj)
+                    # dd = ca.norm_2(X[:2,i]-Xj)
+                    # d_p = self.R - dd
+                    # epsilon = self.dt * max_vel
+                    # max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
+                    # effective_max_radius = ca.fmax(0.0, max_value - 1e-2)
+                    # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),effective_max_radius**2))
+                    ### Optimize only u
+                    Xi = ca.vertcat(TX0[(self.n_agent-1)*(steps+1) + i + 1], TY0[(self.n_agent-1)*(steps+1) + i +  1])
+                    dd = ca.norm_2(Xi-Xj)
                     d_p = self.R - dd
                     epsilon = self.dt * max_vel
-                    max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
-                    effective_max_radius = ca.fmax(0.0, max_value - 1e-2)
+                    max_value = (d_p-epsilon)/self.dt + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
+                    effective_max_radius = ca.fmax(0.0, max_value)
                     opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),effective_max_radius**2))
+                    ###
                     # opti.subject_to(opti.bounded(-max_value/1.414, U[0, i],max_value/1.414))
                     # opti.subject_to(opti.bounded(-max_value/1.414, U[1, i],max_value/1.414))
                     # obj -= 0.5 * ca.log(max_value**2 - ca.sumsqr(U[0:2, 0]) + 0.1)
@@ -953,12 +966,14 @@ class NeuralMPC:
                         # print(self.n_agent, "=================")
                         # print(self.n_agent, "Trajs: ", self.traj_x)
                         # # print(self.n_agent, "X: ", x_traj_flat)
-                        # print(self.n_agent, "x_k:", x_k)
+                        # np.set_printoptions(precision=17, suppress=True) # 17 cifre per float64, suppress per notazione non scientifica
+                        # print(self.n_agent, "x_k:", x_k.full())
                         # print(self.n_agent, "=================")
                         # Convert to CasADi DM
                         x_traj_dm = ca.DM(x_traj_flat)
                         y_traj_dm = ca.DM(y_traj_flat)
                         # MPC
+                        # print(self.n_agent, ": ", adj_dm)
                         u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
                         # mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
 

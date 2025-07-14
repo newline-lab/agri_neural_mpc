@@ -639,7 +639,11 @@ class NeuralMPC:
             # Collision avoidance: ensure safety margin from trees.
             delta = X[:2, i] - trees_dm.T
             sq_dists = ca.diag(ca.mtimes(delta.T, delta))
-            opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
+            # opti.subject_to(ca.mmin(sq_dists) >= safe_distance**2)
+            # Smooth min usando log-sum-exp
+            alpha = 10  # parametro di smoothing
+            smooth_min = -ca.log(ca.sum1(ca.exp(-alpha * sq_dists))) / alpha
+            opti.subject_to(smooth_min >= safe_distance**2)
 
             # connectivity
             # if i < steps:
@@ -665,24 +669,32 @@ class NeuralMPC:
         # Connectivity FIRST step
         # idea: dT * ||u|| <= R - || xi0 - xj0 || - dT * U_max
         for i in range(steps):
+            my_X_at_i_plus_1 = X[0:2, i+1] 
             for n in range(num_span):
-                if n != self.n_agent-1:
-                    Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i +  1]) 
-                    # dd = ca.norm_2(X[:2,i]-Xj)
-                    # d_p = self.R - dd
-                    # epsilon = self.dt * max_vel
-                    # max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
-                    # effective_max_radius = ca.fmax(0.0, max_value - 1e-2)
-                    # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),effective_max_radius**2))
-                    ### Optimize only u
-                    Xi = ca.vertcat(TX0[(self.n_agent-1)*(steps+1) + i + 1], TY0[(self.n_agent-1)*(steps+1) + i +  1])
-                    dd = ca.norm_2(Xi-Xj)
-                    d_p = self.R - dd
+                if n != (self.n_agent - 1): # Se n non è il mio ID
+                    neighbor_X_at_i_plus_1 = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i + 1])
+                    dd = ca.norm_2(my_X_at_i_plus_1 - neighbor_X_at_i_plus_1)
                     epsilon = self.dt * max_vel
-                    max_value = (d_p-epsilon)/self.dt + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
-                    effective_max_radius = ca.fmax(0.0, max_value)
-                    opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),effective_max_radius**2))
-                    ###
+                    opti.subject_to(dd <= self.R - epsilon + (1-S0[n])*100 ) # (1-S0[n])*100 spanning tree
+                    obj += 0.0001*dd
+            # for n in range(num_span):
+            #     if n != self.n_agent-1:
+            #         Xj = ca.vertcat(TX0[n*(steps+1) + i + 1], TY0[n*(steps+1) + i +  1]) 
+            #         # dd = ca.norm_2(X[:2,i]-Xj)
+            #         # d_p = self.R - dd
+            #         # epsilon = self.dt * max_vel
+            #         # max_value = (d_p-epsilon)/self.dt # + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
+            #         # effective_max_radius = ca.fmax(0.0, max_value - 1e-2)
+            #         # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, 0]),effective_max_radius**2))
+            #         ### Optimize only u
+            #         Xi = ca.vertcat(TX0[(self.n_agent-1)*(steps+1) + i + 1], TY0[(self.n_agent-1)*(steps+1) + i +  1])
+            #         dd = ca.norm_2(Xi-Xj)
+            #         d_p = self.R - dd
+            #         epsilon = self.dt * max_vel
+            #         max_value = (d_p-epsilon)/self.dt + (1-S0[n])*100 # (1-S0[n])*100 spanning tree
+            #         effective_max_radius = ca.fmax(0.0, max_value)
+            #         opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, i]),effective_max_radius**2))
+            #         ###
                     # opti.subject_to(opti.bounded(-max_value/1.414, U[0, i],max_value/1.414))
                     # opti.subject_to(opti.bounded(-max_value/1.414, U[1, i],max_value/1.414))
                     # obj -= 0.5 * ca.log(max_value**2 - ca.sumsqr(U[0:2, 0]) + 0.1)

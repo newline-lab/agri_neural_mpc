@@ -81,13 +81,14 @@ class RobotsPositionListener:
             RESET = "\033[0m"
             rospy.loginfo(f"{GREEN}NEXT STEP{RESET}")
 
-            self.publish_trajectories()
-
             A = self.compute_adjacency_matrix(positions)
             self.publish_adjacency_matrix(A)
             lambda2 = self.compute_lambda2(A)
             self.lambda2_pub.publish(lambda2)
             self.publish_robot_positions(positions)
+
+            self.publish_trajectories()
+
 
             self.curret_ok = [False] * self.num_robots
             self.traj_x = [[] for _ in range(self.num_robots)]

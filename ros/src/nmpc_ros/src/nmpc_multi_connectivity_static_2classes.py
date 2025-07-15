@@ -632,7 +632,11 @@ class NeuralMPC:
                 opti.subject_to(opti.bounded(-ca.inf, dirs+dist , 0))
 
             if i < steps:
-                opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, i]),max_vel**2))
+                # opti.subject_to(opti.bounded(0.0, ca.sumsqr(U[0:2, i]),max_vel**2))
+                t = opti.variable() 
+                opti.subject_to(t >= 0)
+                opti.subject_to(t <= max_vel - 1e-1)
+                opti.subject_to(U[0, i]**2 + U[1, i]**2 <= t**2)
                 opti.subject_to(opti.bounded(-3.14/2, U[-1, i], 3.14/2))
                 obj += w_control * ca.sumsqr(U[0:2, i]) + w_ang * ca.sumsqr(U[2, i])
 

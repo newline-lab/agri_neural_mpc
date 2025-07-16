@@ -770,14 +770,14 @@ class NeuralMPC:
         options = {
             "ipopt": {
                 # ===== VINCOLI HARD - TOLLERANZE STRETTE =====
-                "constr_viol_tol": 1e-6,        # VINCOLI MOLTO STRETTI (hard)
-                "compl_inf_tol": 1e-6,          # Complementarità stretta per vincoli
+                "constr_viol_tol": 1e-12,        # VINCOLI MOLTO STRETTI (hard)
+                "compl_inf_tol": 1e-12,          # Complementarità stretta per vincoli
                 # ===== OTTIMALITÀ RILASSATA =====
                 "tol": 1e-6,                    # Ottimalità molto rilassata (sub-ottimo OK)
                 "dual_inf_tol": 1e-6,           # Infeasibility duale rilassata
                 # ===== FALLBACK SUB-OTTIMO =====
                 "acceptable_tol": 1e-1,            # Tolleranza emergency molto alta
-                "acceptable_constr_viol_tol": 1e-6,  # Ma vincoli sempre rispettati!
+                "acceptable_constr_viol_tol": 1e-12,  # Ma vincoli sempre rispettati!
                 "acceptable_dual_inf_tol": 10,  # Duale emergency rilasciato              
                 # ===== STRATEGIA VELOCE =====
                 "mu_strategy": "monotone",      # Monotona più veloce

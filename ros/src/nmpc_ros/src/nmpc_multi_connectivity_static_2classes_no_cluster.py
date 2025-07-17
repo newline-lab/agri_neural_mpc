@@ -568,8 +568,8 @@ class NeuralMPC:
 
             # Robot-Robot Collision avoidance
             pi = X0[0:2] 
-            for n in self.neighbors_id:
-                pj = N0[2*n:2*n+2]
+            for n in range(num_span):
+                pj = ca.vertcat(TX0[n*(steps+1) + 1], TY0[n*(steps+1) + 1])
                 pij = pj - pi
                 dirs = ca.dot(X[0:2, i] - (pi + pj) / 2, pij)
                 dist = 0.3 * ca.norm_2(pij)
@@ -606,9 +606,9 @@ class NeuralMPC:
                     dd = ca.norm_2(my_X_at_i_plus_1 - neighbor_X_at_i_plus_1)
                     epsilon = self.dt * max_vel
                     opti.subject_to(dd <= self.R - epsilon + (1-S0[n])*100 ) # (1-S0[n])*100 spanning tree
-                    
-                    # Repuslion term
-                    obj -= 0.001*dd
+
+                    # Repuslion term between agents
+                    # obj -= 0.001*dd
 
         nn_batch = []
         for i in range(steps):

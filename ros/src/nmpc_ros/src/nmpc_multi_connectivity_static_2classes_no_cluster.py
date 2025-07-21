@@ -565,7 +565,7 @@ class NeuralMPC:
     # ---------------------------
     # MPC Optimization Function 
     # ---------------------------
-    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, steps=10):
+    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, assigned_mask, steps=10):
         nx_local = 3                           # For clarity in this function
         n_state = nx_local                     # 3-dimensional state: [x, y, theta]
         n_control = nx_local                   # 3-dimensional control: [vx, vy, angular_vel]
@@ -582,13 +582,15 @@ class NeuralMPC:
         num_x_traj = x_traj.shape[0]
         num_y_traj = y_traj.shape[0]
         num_span = span.shape[0]
-        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span)
+        num_assigned_mask = assigned_mask.shape[0]
+        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span + num_assigned_mask)
         X0 = P0[: n_state]
         L0 = P0[n_state:n_state+num_trees]
         N0 = P0[n_state+num_trees:n_state+num_trees+num_neighbors]
         TX0 = P0[n_state+num_trees+num_neighbors:n_state+num_trees+num_neighbors+num_x_traj]
         TY0 = P0[n_state+num_trees+num_neighbors+num_x_traj:n_state+num_trees+num_neighbors+num_x_traj+num_y_traj]
-        S0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj:]
+        S0 =  P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj:n_state+num_trees+num_neighbors+num_x_traj+num_y_traj+num_span]
+        AT0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj+num_span:]
         # Initialize belief evolution.
         lambda_evol = [L0]
 
@@ -683,9 +685,10 @@ class NeuralMPC:
 
         # Limited area (Cells) and attraction
         for i in range(steps+1):
-            for a_a in assigned_tree:
+            # for a_a in assigned_tree:
+            for a_a in range(num_trees):
                 # aggregation term for assigned cells 
-                aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
+                aggregation += AT0[a_a] * self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
 
         # Compute entropy terms for the objective.
         entropy_future = self.entropy(ca.vcat([*lambda_evol[1:]]))
@@ -698,7 +701,8 @@ class NeuralMPC:
                 mask[idx] = 1
         exp_weights = ca.vcat([ca.exp(-2*i) * ca.DM.ones(num_trees, 1) for i in range(steps)])
         # entropy_term = ca.sum1((mask * exp_weights) * entropy_future) * w_entropy
-        entropy_term = ca.logsumexp((mask * exp_weights) * entropy_future) * w_entropy
+        # entropy_term = ca.logsumexp((mask * exp_weights) * entropy_future) * w_entropy
+        entropy_term = ca.logsumexp((AT0 * exp_weights) * entropy_future) * w_entropy
         #---------------------------        
         # Add terms to the objective.
         obj += entropy_term
@@ -766,7 +770,7 @@ class NeuralMPC:
         }
         opti.solver("ipopt", options)
         # Set the parameter values.
-        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span))
+        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span, assigned_mask))
         sol = opti.solve()
 
         # check solution        
@@ -904,14 +908,14 @@ class NeuralMPC:
                     # Convert to CasADi DM
                     x_traj_dm = ca.DM(x_traj_flat)
                     y_traj_dm = ca.DM(y_traj_flat)
+                    # Assigned trees 
+                    assigned_dm = ca.DM.ones(self.trees_pos.shape[0]*(self.N), 1)
                     # MPC
-                    mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                    mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, assigned_dm, self.mpc_horizon)
                     warm_start = False
                 else: # MPC step
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                        self.assignment_computation()
-                        print(self.n_agent, self.assigned)
                         # Flattening agent trajectories (excluding dummy index 0)
                         x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj] #traj[:-1]]
                         y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj] #traj[:-1]]
@@ -924,9 +928,13 @@ class NeuralMPC:
                         # Convert to CasADi DM
                         x_traj_dm = ca.DM(x_traj_flat)
                         y_traj_dm = ca.DM(y_traj_flat)
+                        # Assigned trees
+                        self.assignment_computation()
+                        assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
+                        assigned_dm = ca.DM(assigned_dm * self.N)
                         # MPC
                         # print(self.n_agent, ": ", adj_dm)
-                        u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
+                        u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, assigned_dm), x_dec, lam)
                         # mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
                 lambda_prediction = np.array(lambda_prediction)
 

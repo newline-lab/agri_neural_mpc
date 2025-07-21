@@ -162,6 +162,7 @@ class NeuralMPC:
         # Predictions
         self.traj_x = None
         self.traj_y = None
+        self.traj_theta = None
 
     # ---------------------------
     # Callback Functions
@@ -212,11 +213,13 @@ class NeuralMPC:
         """
         self.traj_x = [[]]  # index 0 is empty
         self.traj_y = [[]]  # index 0 is empty
+        self.traj_theta = [[]]  # index 0 is empty
 
         idx = 0
         for length in msg.lengths:
             self.traj_x.append(msg.traj_x[idx:idx+length])
             self.traj_y.append(msg.traj_y[idx:idx+length])
+            self.traj_theta.append(msg.traj_theta[idx:idx+length])
             idx += length
         # Output: self.traj_x[i] = traj_x of robot i = 1,...,N (id=0 no robots)
 
@@ -506,7 +509,9 @@ class NeuralMPC:
             lambda2s = ca.vertcat(lambda2s, lambda_k)
             betas = ca.vertcat(betas, beta_k)
         return lambda2s, betas
-
+    
+    # def assignment_computation(self):
+        
 
     # ---------------------------
     # MPC Optimization Function 
@@ -872,6 +877,7 @@ class NeuralMPC:
                 self.robot_positions = None
                 self.traj_x = None
                 self.traj_y = None
+                self.traj_theta = None
 
                 # Sync msg
                 msg = Trajectory()
@@ -892,7 +898,7 @@ class NeuralMPC:
                 if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
                     cmd_pose = x_traj[:,1] # x_k + self.dt * u[:, 0]  # x_traj[:,1] # F_(x_k, u[:, 0])
                     # if self.n_agent == 2: # debug
-                    #     print("====================")
+                    #     print(self.n_agent, "====================")
                     #     print("predicitions, ", x_traj_flat)
                     #     print("x_k:", x_k)
                     #     print("x: ", msg.positions_x)
@@ -901,6 +907,10 @@ class NeuralMPC:
                     #     print("CMD pose:", cmd_pose)
                     #     if np.abs(x_k[0]-msg.positions_x[0]) > 0.1:
                     #         rospy.loginfo("\033[92m" + " ******** VALORI DIVERSI" + "\033[0m")
+                    # print(self.n_agent, "====================")
+                    # print("x_k:", x_k)
+                    # print("cmd_poe:", cmd_pose)
+                    # print("traj theta:", msg.theta)
                 else:
                     rospy.loginfo("\033[92mAgent " + str(self.n_agent) + ": done\033[0m")
 

@@ -28,6 +28,7 @@ class RobotsPositionListener:
         self.traj_x = [[] for _ in range(self.num_robots)]
         self.traj_y = [[] for _ in range(self.num_robots)]
         self.thetas = [[] for _ in range(self.num_robots)]
+        self.lambdas = [[] for _ in range(self.num_robots)] # predizioni lambda alberi stati futuri
         self.history_pos = []
 
         # TF
@@ -68,6 +69,7 @@ class RobotsPositionListener:
         self.traj_x[msg.id - 1] = msg.positions_x
         self.traj_y[msg.id - 1] = msg.positions_y
         self.thetas[msg.id - 1] = msg.theta
+        self.lambdas[msg.id - 1] = msg.lambdas
 
         if all(self.curret_ok):
             # positions = self.get_robot_positions()
@@ -177,7 +179,9 @@ class RobotsPositionListener:
         msg.traj_x = [x for robot_x in self.traj_x for x in robot_x]
         msg.traj_y = [y for robot_y in self.traj_y for y in robot_y]
         msg.traj_theta = [t for robot_t in self.thetas for t in robot_t]
-        msg.lengths = [len(robot_x) for robot_x in self.traj_x]  # o robot_y, sono uguali in lunghezza
+        msg.lambdas = [l for robot_l in self.lambdas for l in robot_l]
+        msg.lengths = [len(robot_x) for robot_x in self.traj_x] 
+        msg.lengths_lambda = [len(robot_l) for robot_l in self.lambdas]
 
         self.traj_pub.publish(msg)
 

@@ -163,6 +163,7 @@ class NeuralMPC:
         self.traj_x = None
         self.traj_y = None
         self.traj_theta = None
+        self.all_lambdas = None
 
     # ---------------------------
     # Callback Functions
@@ -213,7 +214,8 @@ class NeuralMPC:
         """
         self.traj_x = [[]]  # index 0 is empty
         self.traj_y = [[]]  # index 0 is empty
-        self.traj_theta = [[]]  # index 0 is empty
+        self.traj_theta = [[]]  # index 0 is empty 
+        self.all_lambdas = [[]]  # index 0 is empty 
 
         idx = 0
         for length in msg.lengths:
@@ -221,6 +223,12 @@ class NeuralMPC:
             self.traj_y.append(msg.traj_y[idx:idx+length])
             self.traj_theta.append(msg.traj_theta[idx:idx+length])
             idx += length
+
+        idx = 0
+        for length in msg.lengths_lambda:
+            self.all_lambdas.append(msg.lambdas[idx:idx+length])
+            idx += length
+
         # Output: self.traj_x[i] = traj_x of robot i = 1,...,N (id=0 no robots)
 
     def next_step(self, msg):
@@ -510,8 +518,49 @@ class NeuralMPC:
             betas = ca.vertcat(betas, beta_k)
         return lambda2s, betas
     
-    # def assignment_computation(self):
-        
+    def assignment_computation(self):
+        """
+        Computa gli alberi effettivamente assegnati all'agente corrente,
+        rimuovendo quelli per cui altri agenti hanno lambda più distanti da 0.5
+        """
+        # Inizializza con tutti gli alberi disponibili
+        self.assigned = np.arange(self.trees_pos.shape[0])
+        # Numero totale di alberi
+        n_trees = self.trees_pos.shape[0]
+        # Lista degli alberi da rimuovere
+        trees_to_remove = []
+        # Per ogni albero
+        for tree_idx in range(n_trees):
+            # Trova il mio miglior lambda per questo albero (massima distanza da 0.5)
+            my_best_distance = 0.0
+            for t in range(self.N + 1):
+                lambda_idx = t * n_trees + tree_idx
+                if (self.n_agent < len(self.all_lambdas) and lambda_idx < len(self.all_lambdas[self.n_agent])):
+                    my_lambda = self.all_lambdas[self.n_agent][lambda_idx]
+                    my_distance = abs(my_lambda - 0.5)
+                    if my_distance > my_best_distance:
+                        my_best_distance = my_distance
+            # Controlla se altri agenti hanno un lambda migliore del mio migliore
+            should_remove = False
+            for agent_idx in range(1, len(self.all_lambdas)):
+                if agent_idx != self.n_agent:
+                    # Trova il miglior lambda di questo agente per l'albero corrente
+                    other_best_distance = 0.0
+                    for t in range(self.N + 1):
+                        lambda_idx = t * n_trees + tree_idx
+                        if lambda_idx < len(self.all_lambdas[agent_idx]):
+                            other_lambda = self.all_lambdas[agent_idx][lambda_idx]
+                            other_distance = abs(other_lambda - 0.5)
+                            if other_distance > other_best_distance:
+                                other_best_distance = other_distance
+                    # Se l'altro agente ha un lambda migliore del mio migliore
+                    if other_best_distance > my_best_distance:
+                        should_remove = True
+                        break
+            if should_remove:
+                trees_to_remove.append(tree_idx)
+        # Rimuovi gli alberi dalla lista degli assegnati
+        self.assigned = np.array([tree for tree in self.assigned if tree not in trees_to_remove])                
 
     # ---------------------------
     # MPC Optimization Function 
@@ -727,14 +776,18 @@ class NeuralMPC:
         if status not in success_states:
             rospy.logerr(f"Agent {self.n_agent} - Solver failed: {status}")
 
+        # Concatenate lambda_evol into a single CasADi expression
+        lambda_evol_output = ca.vertcat(*lambda_evol)
+
         # Create the MPC step function for warm starting.
         inputs = [P0, opti.x, opti.lam_g]
-        outputs = [U[:, 0], X, opti.x, opti.lam_g]
+        outputs = [U[:, 0], X, lambda_evol_output, opti.x, opti.lam_g]
         mpc_step = opti.to_function("mpc_step", inputs, outputs)
 
         return (mpc_step,
                 ca.DM(sol.value(U[:, 0])),
                 ca.DM(sol.value(X)),
+                ca.DM(sol.value(lambda_evol_output)),
                 ca.DM(sol.value(opti.x)),
                 ca.DM(sol.value(opti.lam_g)))
 
@@ -852,11 +905,13 @@ class NeuralMPC:
                     x_traj_dm = ca.DM(x_traj_flat)
                     y_traj_dm = ca.DM(y_traj_flat)
                     # MPC
-                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                    mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
                     warm_start = False
                 else: # MPC step
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
+                        self.assignment_computation()
+                        print(self.n_agent, self.assigned)
                         # Flattening agent trajectories (excluding dummy index 0)
                         x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj] #traj[:-1]]
                         y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj] #traj[:-1]]
@@ -871,8 +926,9 @@ class NeuralMPC:
                         y_traj_dm = ca.DM(y_traj_flat)
                         # MPC
                         # print(self.n_agent, ": ", adj_dm)
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
-                        # mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                        u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
+                        # mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                lambda_prediction = np.array(lambda_prediction)
 
                 self.robot_positions = None
                 self.traj_x = None
@@ -887,6 +943,7 @@ class NeuralMPC:
                 msg.positions_x = x_traj[0, :].full().flatten().tolist()
                 msg.positions_y = x_traj[1, :].full().flatten().tolist()
                 msg.theta = x_traj[2, :].full().flatten().tolist()
+                msg.lambdas = lambda_prediction
                 self.ok_mpc.publish(msg)
                 # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
 

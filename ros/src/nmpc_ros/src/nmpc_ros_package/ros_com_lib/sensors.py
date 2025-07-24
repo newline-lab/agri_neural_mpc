@@ -58,7 +58,7 @@ def create_path_from_mpc_prediction(mpc_prediction):
 
 def create_tree_markers(trees_pos, lambda_values):
     markers = MarkerArray()
-    lambda_values = np.array(lambda_values).flatten() # Ensure it's a flat numpy array
+    lambda_values = np.array(lambda_values) # Ensure it's a flat numpy array
 
     # --- Parameters for visualization ---
     # Base Tree (Trunk)
@@ -112,28 +112,15 @@ def create_tree_markers(trees_pos, lambda_values):
         # (since its base is at 0 and height is BASE_TREE_HEIGHT)
         indicator_base_z = BASE_TREE_HEIGHT
 
-        if lambda_val > 0.5:
-            # Red cylinder gets higher.
-            # The term (lambda_val - 0.5) ranges from (0, 0.5].
-            # We want to scale this to the [0, 1] range for proportionality: (lambda_val - 0.5) / 0.5 = 2 * (lambda_val - 0.5)
-            # This scaled_proportion ranges from (0, 1].
-            scaled_proportion = 2 * (lambda_val - 0.5)
-            red_height = INDICATOR_MIN_HEIGHT + VARIABLE_HEIGHT_RANGE * scaled_proportion
-            green_height = INDICATOR_MIN_HEIGHT
-        elif lambda_val < 0.5:
-            # Green cylinder gets higher.
-            # The term lambda_val ranges from [0, 0.5].
-            # We want to scale this to the [0, 1] range for proportionality: lambda_val / 0.5 = 2 * lambda_val
-            # This scaled_proportion ranges from [0, 1].
-            # The original formula: 1 - 2 * (0.5 - lambda_val) = 1 - (1 - 2*lambda_val) = 2 * lambda_val. So this is correct.
-            scaled_proportion = 1 - 2 * lambda_val
+        base = INDICATOR_MIN_HEIGHT
+        span = VARIABLE_HEIGHT_RANGE
 
-            red_height = INDICATOR_MIN_HEIGHT
-            green_height = INDICATOR_MIN_HEIGHT + VARIABLE_HEIGHT_RANGE * scaled_proportion
+        # sanity‐clamp in case of numerical drift
+        p_red   = max(INDICATOR_MIN_HEIGHT, min(1.0, lambda_val[0]))
+        p_green = max(INDICATOR_MIN_HEIGHT, min(1.0, lambda_val[1]))
 
-        # Clamp heights to be safe, though logic should prevent exceeding max.
-        red_height = max(INDICATOR_MIN_HEIGHT, min(INDICATOR_MAX_HEIGHT, red_height))
-        green_height = max(INDICATOR_MIN_HEIGHT, min(INDICATOR_MAX_HEIGHT, green_height))
+        red_height   = base + span * p_red
+        green_height = base + span * p_green
 
         # --- 3. Red Indicator Cylinder ---
         red_marker = Marker()

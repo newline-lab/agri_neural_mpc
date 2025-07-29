@@ -540,23 +540,27 @@ class NeuralMPC:
                     my_distance = abs(my_lambda - 0.5)
                     if my_distance > my_best_distance:
                         my_best_distance = my_distance
-            # Controlla se altri agenti hanno un lambda migliore del mio migliore
             should_remove = False
-            for agent_idx in range(1, len(self.all_lambdas)):
-                if agent_idx != self.n_agent:
-                    # Trova il miglior lambda di questo agente per l'albero corrente
-                    other_best_distance = 0.0
-                    for t in range(self.N + 1):
-                        lambda_idx = t * n_trees + tree_idx
-                        if lambda_idx < len(self.all_lambdas[agent_idx]):
-                            other_lambda = self.all_lambdas[agent_idx][lambda_idx]
-                            other_distance = abs(other_lambda - 0.5)
-                            if other_distance > other_best_distance:
-                                other_best_distance = other_distance
-                    # Se l'altro agente ha un lambda migliore del mio migliore
-                    if other_best_distance > my_best_distance:
-                        should_remove = True
-                        break
+            # Rimuovi tutti gli alberi visti
+            if self.lambda_k[tree_idx] > 0.95 or self.lambda_k[tree_idx] < 0.05: #my_current_distance > 0.45:
+                should_remove = True
+            # Controlla se altri agenti hanno un lambda migliore del mio migliore (se non è gia da rimuovere)
+            if should_remove == False:
+                for agent_idx in range(1, len(self.all_lambdas)):
+                    if agent_idx != self.n_agent:
+                        # Trova il miglior lambda di questo agente per l'albero corrente
+                        other_best_distance = 0.0
+                        for t in range(self.N + 1):
+                            lambda_idx = t * n_trees + tree_idx
+                            if lambda_idx < len(self.all_lambdas[agent_idx]):
+                                other_lambda = self.all_lambdas[agent_idx][lambda_idx]
+                                other_distance = abs(other_lambda - 0.5)
+                                if other_distance > other_best_distance:
+                                    other_best_distance = other_distance
+                        # Se l'altro agente ha un lambda migliore del mio migliore
+                        if other_best_distance > my_best_distance:
+                            should_remove = True
+                            break
             if should_remove:
                 trees_to_remove.append(tree_idx)
         # Rimuovi gli alberi dalla lista degli assegnati
@@ -663,8 +667,8 @@ class NeuralMPC:
                     epsilon = self.dt * max_vel
                     opti.subject_to(dd <= self.R - epsilon + (1-S0[n])*100 ) # (1-S0[n])*100 spanning tree
 
-                    # Repuslion term between agents
-                    # obj -= 0.001*dd
+        #             # Repuslion term between agents
+        #             # obj -= 0.001*dd
 
         nn_batch = []
         for i in range(steps):
@@ -915,27 +919,28 @@ class NeuralMPC:
                     warm_start = False
                 else: # MPC step
                     # Move to accomplish the task (if not completed)
-                    if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
-                        # Flattening agent trajectories (excluding dummy index 0)
-                        x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj] #traj[:-1]]
-                        y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj] #traj[:-1]]
-                        # print(self.n_agent, "=================")
-                        # print(self.n_agent, "Trajs: ", self.traj_x)
-                        # # print(self.n_agent, "X: ", x_traj_flat)
-                        # np.set_printoptions(precision=17, suppress=True) # 17 cifre per float64, suppress per notazione non scientifica
-                        # print(self.n_agent, "x_k:", x_k.full())
-                        # print(self.n_agent, "=================")
-                        # Convert to CasADi DM
-                        x_traj_dm = ca.DM(x_traj_flat)
-                        y_traj_dm = ca.DM(y_traj_flat)
-                        # Assigned trees
-                        self.assignment_computation()
-                        assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
-                        assigned_dm = ca.DM(assigned_dm * self.N)
-                        # MPC
-                        # print(self.n_agent, ": ", adj_dm)
-                        u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, assigned_dm), x_dec, lam)
-                        # mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                    #if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
+                    # Flattening agent trajectories (excluding dummy index 0)
+                    x_traj_flat = [elem for traj in self.traj_x[1:] for elem in traj] #traj[:-1]]
+                    y_traj_flat = [elem for traj in self.traj_y[1:] for elem in traj] #traj[:-1]]
+                    # print(self.n_agent, "=================")
+                    # print(self.n_agent, "Trajs: ", self.traj_x)
+                    # # print(self.n_agent, "X: ", x_traj_flat)
+                    # np.set_printoptions(precision=17, suppress=True) # 17 cifre per float64, suppress per notazione non scientifica
+                    # print(self.n_agent, "x_k:", x_k.full())
+                    # print(self.n_agent, "=================")
+                    # Convert to CasADi DM
+                    x_traj_dm = ca.DM(x_traj_flat)
+                    y_traj_dm = ca.DM(y_traj_flat)
+                    # Assigned trees
+                    self.assignment_computation()
+                    assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
+                    # print(self.n_agent, ": ", assigned_dm)
+                    assigned_dm = ca.DM(assigned_dm * self.N)
+                    # MPC
+                    u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, assigned_dm), x_dec, lam)
+                    # mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                
                 lambda_prediction = np.array(lambda_prediction)
 
                 self.robot_positions = None
@@ -959,8 +964,8 @@ class NeuralMPC:
                 # Log the MPC velocity command.
                 u_np = np.array(u.full()).flatten()
 
-                # Compute the command pose.
-                if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
+                # Compute the command pose if tree is assigned
+                if self.assigned.size != 0: #np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
                     cmd_pose = x_traj[:,1] # x_k + self.dt * u[:, 0]  # x_traj[:,1] # F_(x_k, u[:, 0])
                     # if self.n_agent == 2: # debug
                     #     print(self.n_agent, "====================")

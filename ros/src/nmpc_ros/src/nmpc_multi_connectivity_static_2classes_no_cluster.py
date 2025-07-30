@@ -518,7 +518,56 @@ class NeuralMPC:
             betas = ca.vertcat(betas, beta_k)
         return lambda2s, betas
     
-    def assignment_computation(self):
+    # Original function to compute assignment
+    # def assignment_computation(self):
+    #     """
+    #     Computa gli alberi effettivamente assegnati all'agente corrente,
+    #     rimuovendo quelli per cui altri agenti hanno lambda più distanti da 0.5
+    #     """
+    #     # Inizializza con tutti gli alberi disponibili
+    #     self.assigned = np.arange(self.trees_pos.shape[0])
+    #     # Numero totale di alberi
+    #     n_trees = self.trees_pos.shape[0]
+    #     # Lista degli alberi da rimuovere
+    #     trees_to_remove = []
+    #     # Per ogni albero
+    #     for tree_idx in range(n_trees):
+    #         # Trova il mio miglior lambda per questo albero (massima distanza da 0.5)
+    #         my_best_distance = 0.0
+    #         for t in range(self.N + 1):
+    #             lambda_idx = t * n_trees + tree_idx
+    #             if (self.n_agent < len(self.all_lambdas) and lambda_idx < len(self.all_lambdas[self.n_agent])):
+    #                 my_lambda = self.all_lambdas[self.n_agent][lambda_idx]
+    #                 my_distance = abs(my_lambda - 0.5)
+    #                 if my_distance > my_best_distance:
+    #                     my_best_distance = my_distance
+    #         should_remove = False
+    #         # Rimuovi tutti gli alberi visti
+    #         if self.lambda_k[tree_idx] > 0.95 or self.lambda_k[tree_idx] < 0.05: #my_current_distance > 0.45:
+    #             should_remove = True
+    #         # Controlla se altri agenti hanno un lambda migliore del mio migliore (se non è gia da rimuovere)
+    #         if should_remove == False:
+    #             for agent_idx in range(1, len(self.all_lambdas)):
+    #                 if agent_idx != self.n_agent:
+    #                     # Trova il miglior lambda di questo agente per l'albero corrente
+    #                     other_best_distance = 0.0
+    #                     for t in range(self.N + 1):
+    #                         lambda_idx = t * n_trees + tree_idx
+    #                         if lambda_idx < len(self.all_lambdas[agent_idx]):
+    #                             other_lambda = self.all_lambdas[agent_idx][lambda_idx]
+    #                             other_distance = abs(other_lambda - 0.5)
+    #                             if other_distance > other_best_distance:
+    #                                 other_best_distance = other_distance
+    #                     # Se l'altro agente ha un lambda migliore del mio migliore
+    #                     if other_best_distance > my_best_distance:
+    #                         should_remove = True
+    #                         break
+    #         if should_remove:
+    #             trees_to_remove.append(tree_idx)
+    #     # Rimuovi gli alberi dalla lista degli assegnati
+    #     self.assigned = np.array([tree for tree in self.assigned if tree not in trees_to_remove])                
+
+    def assignment_computation(self, adj_dm):
         """
         Computa gli alberi effettivamente assegnati all'agente corrente,
         rimuovendo quelli per cui altri agenti hanno lambda più distanti da 0.5
@@ -540,10 +589,12 @@ class NeuralMPC:
                     my_distance = abs(my_lambda - 0.5)
                     if my_distance > my_best_distance:
                         my_best_distance = my_distance
+            
             should_remove = False
             # Rimuovi tutti gli alberi visti
             if self.lambda_k[tree_idx] > 0.95 or self.lambda_k[tree_idx] < 0.05: #my_current_distance > 0.45:
                 should_remove = True
+            
             # Controlla se altri agenti hanno un lambda migliore del mio migliore (se non è gia da rimuovere)
             if should_remove == False:
                 for agent_idx in range(1, len(self.all_lambdas)):
@@ -557,14 +608,53 @@ class NeuralMPC:
                                 other_distance = abs(other_lambda - 0.5)
                                 if other_distance > other_best_distance:
                                     other_best_distance = other_distance
+                        
                         # Se l'altro agente ha un lambda migliore del mio migliore
                         if other_best_distance > my_best_distance:
                             should_remove = True
                             break
+            
             if should_remove:
                 trees_to_remove.append(tree_idx)
+        
+        # Ottieni la posizione corrente dell'agente (secondo punto della traiettoria)
+        my_x = self.traj_x[self.n_agent][1] 
+        my_y = self.traj_y[self.n_agent][1] 
+        # Filtro finale: rimuovi alberi che non sono nell'intersezione con i vicini
+        for tree_idx in range(n_trees):
+            # Se l'albero è già stato marcato per la rimozione, salta
+            if tree_idx in trees_to_remove:
+                continue
+            tree_x = self.trees_pos[tree_idx][0]
+            tree_y = self.trees_pos[tree_idx][1]
+            # Calcola distanza dall'agente corrente all'albero
+            my_distance_to_tree = np.sqrt((tree_x - my_x)**2 + (tree_y - my_y)**2)
+            # Verifica se l'albero è nel raggio di azione dell'agente corrente
+            self.action_radius = self.R-1
+            in_my_range = my_distance_to_tree <= self.action_radius
+            # Se non è nel mio raggio, rimuovilo
+            if not in_my_range:
+                trees_to_remove.append(tree_idx)
+                continue
+            # Verifica se l'albero è nell'intersezione con almeno un vicino
+            in_neighbor_intersection = False
+            for i in range(len(adj_dm)):
+                if adj_dm[i] == 1:  # È un vicino
+                    neighbor_idx = i + 1  # Offset per traj_x/y che iniziano da 1
+                    neighbor_x = self.traj_x[neighbor_idx][1]
+                    neighbor_y = self.traj_y[neighbor_idx][1]
+                    neighbor_distance_to_tree = np.sqrt((tree_x - neighbor_x)**2 + (tree_y - neighbor_y)**2)
+                    # Se anche il vicino può raggiungere l'albero, è nell'intersezione
+                    in_neighbor_range = neighbor_distance_to_tree <= self.action_radius
+                    if in_neighbor_range:
+                        in_neighbor_intersection = True
+                        break
+            # Se l'albero non è nell'intersezione con almeno un vicino, rimuovilo
+            if not in_neighbor_intersection:
+                trees_to_remove.append(tree_idx)
+
         # Rimuovi gli alberi dalla lista degli assegnati
-        self.assigned = np.array([tree for tree in self.assigned if tree not in trees_to_remove])                
+        self.assigned = np.array([tree for tree in self.assigned if tree not in trees_to_remove])
 
     # ---------------------------
     # MPC Optimization Function 
@@ -614,7 +704,8 @@ class NeuralMPC:
         opti.subject_to(X[:, 0] == X0)
 
         # Attraction
-        aggregation = 0   
+        aggregation = 0 
+        attraction = 0  
 
         # Max vel
         max_vel = 2
@@ -667,8 +758,8 @@ class NeuralMPC:
                     epsilon = self.dt * max_vel
                     opti.subject_to(dd <= self.R - epsilon + (1-S0[n])*100 ) # (1-S0[n])*100 spanning tree
 
-        #             # Repuslion term between agents
-        #             # obj -= 0.001*dd
+                    # Attraction term between agents
+                    attraction += 0.001*dd
 
         nn_batch = []
         for i in range(steps):
@@ -712,6 +803,7 @@ class NeuralMPC:
         obj += entropy_term
         # obj += penalty_cells
         obj += aggregation
+        obj += (ca.sum1(AT0)<1.0)*attraction
         opti.minimize(obj)
 
         options = {
@@ -933,9 +1025,9 @@ class NeuralMPC:
                     x_traj_dm = ca.DM(x_traj_flat)
                     y_traj_dm = ca.DM(y_traj_flat)
                     # Assigned trees
-                    self.assignment_computation()
+                    self.assignment_computation(adj_dm.full().flatten().tolist())
                     assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
-                    # print(self.n_agent, ": ", assigned_dm)
+                    print(self.n_agent, ": ", assigned_dm)
                     assigned_dm = ca.DM(assigned_dm * self.N)
                     # MPC
                     u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, assigned_dm), x_dec, lam)
@@ -982,7 +1074,8 @@ class NeuralMPC:
                     # print("cmd_poe:", cmd_pose)
                     # print("traj theta:", msg.theta)
                 else:
-                    rospy.loginfo("\033[92mAgent " + str(self.n_agent) + ": done\033[0m")
+                    cmd_pose = x_traj[:,1]
+                    rospy.loginfo("\033[92mAgent " + str(self.n_agent) + ": Aggregation\033[0m")
 
                 # Publish predicted path.
                 predicted_path_msg = create_path_from_mpc_prediction(x_traj[:self.nx, 1:])

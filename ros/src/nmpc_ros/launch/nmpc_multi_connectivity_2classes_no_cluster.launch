@@ -24,7 +24,7 @@
   <arg name="node_start_delay3" default="7.0" />   
 
   <!-- Connectivity -->
-  <arg name="max_dist" default="6.0" />  <!-- max dist -->
+  <arg name="max_dist" default="8.0" />  <!-- max dist 6 -->
   <node name="Lambda_2" pkg="nmpc_ros" type="connectivity_node_sync.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay0); $0 $@' ">
     <param name="num_robots" value="3"/>
     <param name="alpha_elem" value="1.0"/>

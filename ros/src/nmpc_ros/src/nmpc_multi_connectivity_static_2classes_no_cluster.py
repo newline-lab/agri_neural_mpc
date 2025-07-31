@@ -756,7 +756,8 @@ class NeuralMPC:
                     opti.subject_to(dd <= self.R - epsilon + (1-S0[n])*100 ) # (1-S0[n])*100 spanning tree
 
                     # Attraction term between agents
-                    attraction += 0.001*dd
+                    attraction += 0.001*ca.sumsqr(my_X_at_i_plus_1 - neighbor_X_at_i_plus_1)
+
 
         nn_batch = []
         for i in range(steps):
@@ -799,7 +800,7 @@ class NeuralMPC:
         # Add terms to the objective.
         obj += entropy_term
         # obj += penalty_cells
-        obj += aggregation
+        # obj += aggregation
         obj += (ca.sum1(AT0)<1.0)*attraction
         opti.minimize(obj)
 
@@ -1024,8 +1025,8 @@ class NeuralMPC:
                     # Assigned trees
                     if self.n_agent != 2: # se non sei leader allora scegli alberi
                         self.assignment_computation(adj_dm.full().flatten().tolist())
+                        # print(self.n_agent, ": ", assigned_dm)
                         assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
-                        print(self.n_agent, ": ", assigned_dm)
                         assigned_dm = ca.DM(assigned_dm * self.N)
                     # MPC
                     u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, assigned_dm), x_dec, lam)

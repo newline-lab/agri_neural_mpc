@@ -621,36 +621,33 @@ class NeuralMPC:
         my_x = self.traj_x[self.n_agent][1] 
         my_y = self.traj_y[self.n_agent][1] 
         # Filtro finale: rimuovi alberi che non sono nell'intersezione con i vicini
+        # Per ogni albero ancora considerabile
         for tree_idx in range(n_trees):
-            # Se l'albero è già stato marcato per la rimozione, salta
             if tree_idx in trees_to_remove:
                 continue
-            tree_x = self.trees_pos[tree_idx][0]
-            tree_y = self.trees_pos[tree_idx][1]
-            # Calcola distanza dall'agente corrente all'albero
-            my_distance_to_tree = np.sqrt((tree_x - my_x)**2 + (tree_y - my_y)**2)
-            # Verifica se l'albero è nel raggio di azione dell'agente corrente
-            self.action_radius = self.R-1
-            in_my_range = my_distance_to_tree <= self.action_radius
-            # Se non è nel mio raggio, rimuovilo
+            tree_x, tree_y = self.trees_pos[tree_idx]
+            # Distanza agente-albero
+            my_distance = np.sqrt((tree_x - my_x)**2 + (tree_y - my_y)**2)
+            self.action_radius = self.R - 1
+            in_my_range = my_distance <= self.action_radius
             if not in_my_range:
                 trees_to_remove.append(tree_idx)
                 continue
-            # Verifica se l'albero è nell'intersezione con almeno un vicino
-            in_neighbor_intersection = False
-            for i in range(len(adj_dm)):
-                if adj_dm[i] == 1:  # È un vicino
-                    neighbor_idx = i + 1  # Offset per traj_x/y che iniziano da 1
+            # Intersezione: almeno un vicino DEVE anche avere l'albero nel suo raggio
+            # Verifica se l'albero è nel raggio di tutti i vicini
+            in_all_neighbors_range = True
+            for i, is_neighbor in enumerate(adj_dm):
+                if is_neighbor == 1:
+                    neighbor_idx = i + 1  # Offset perché traj_x/y iniziano da 1
                     neighbor_x = self.traj_x[neighbor_idx][1]
                     neighbor_y = self.traj_y[neighbor_idx][1]
                     neighbor_distance_to_tree = np.sqrt((tree_x - neighbor_x)**2 + (tree_y - neighbor_y)**2)
-                    # Se anche il vicino può raggiungere l'albero, è nell'intersezione
                     in_neighbor_range = neighbor_distance_to_tree <= self.action_radius
-                    if in_neighbor_range:
-                        in_neighbor_intersection = True
+                    if not in_neighbor_range:
+                        in_all_neighbors_range = False
                         break
-            # Se l'albero non è nell'intersezione con almeno un vicino, rimuovilo
-            if not in_neighbor_intersection:
+            # Se anche solo un vicino non lo ha nel raggio, rimuovi l'albero
+            if not in_all_neighbors_range:
                 trees_to_remove.append(tree_idx)
 
         # Rimuovi gli alberi dalla lista degli assegnati
@@ -1025,10 +1022,11 @@ class NeuralMPC:
                     x_traj_dm = ca.DM(x_traj_flat)
                     y_traj_dm = ca.DM(y_traj_flat)
                     # Assigned trees
-                    self.assignment_computation(adj_dm.full().flatten().tolist())
-                    assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
-                    print(self.n_agent, ": ", assigned_dm)
-                    assigned_dm = ca.DM(assigned_dm * self.N)
+                    if self.n_agent != 2: # se non sei leader allora scegli alberi
+                        self.assignment_computation(adj_dm.full().flatten().tolist())
+                        assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
+                        print(self.n_agent, ": ", assigned_dm)
+                        assigned_dm = ca.DM(assigned_dm * self.N)
                     # MPC
                     u, x_traj, lambda_prediction, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, assigned_dm), x_dec, lam)
                     # mpc_step, u, x_traj, lambda_prediction, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)

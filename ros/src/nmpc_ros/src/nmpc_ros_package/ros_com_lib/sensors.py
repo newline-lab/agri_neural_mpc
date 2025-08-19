@@ -1,6 +1,3 @@
-"""
-  Definition of topics to use
-"""
 from sensor_msgs.msg import *
 from std_msgs.msg import *
 from geometry_msgs.msg import *
@@ -8,8 +5,6 @@ import numpy as np
 from nmpc_ros.srv import GetTreesPoses
 import tf
 import tf2_ros
-from std_msgs.msg import Float32MultiArray
-from vision_msgs.msg import Detection2DArray
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 import tf.transformations
@@ -29,13 +24,13 @@ create_pose_array = lambda data: PoseArray(
 
 def create_path_from_mpc_prediction(mpc_prediction):
     path = Path()
-    path.header.frame_id = "map"  # Adjust as needed
+    path.header.frame_id = "map"
     path.header.stamp = rospy.Time.now()
 
     for i in range(mpc_prediction.shape[1]):
         pose = PoseStamped()
         pose.header = path.header
-        pose.header.stamp =  rospy.Time.now() + rospy.Duration(0.1*i)  # Assuming 0.1s between predictions
+        pose.header.stamp =  rospy.Time.now() + rospy.Duration(0.1*i)
 
         pose.pose.position.x = mpc_prediction[0, i]
         pose.pose.position.y = mpc_prediction[1, i]
@@ -50,7 +45,7 @@ def create_path_from_mpc_prediction(mpc_prediction):
             pose.pose.orientation.z = quaternion[2]
             pose.pose.orientation.w = quaternion[3]
         else:
-            pose.pose.orientation.w = 1.0  # Default orientation if yaw is not provided
+            pose.pose.orientation.w = 1.0
 
         path.poses.append(pose)
 
@@ -58,71 +53,58 @@ def create_path_from_mpc_prediction(mpc_prediction):
 
 def create_tree_markers(trees_pos, lambda_values):
     markers = MarkerArray()
-    lambda_values = np.array(lambda_values) # Ensure it's a flat numpy array
+    lambda_values = np.array(lambda_values)
 
-    # --- Parameters for visualization ---
-    # Base Tree (Trunk)
-    BASE_TREE_DIAMETER = 0.4  # Diameter of the trunk
-    BASE_TREE_HEIGHT = 2.5    # Height of the trunk
-    BASE_TREE_COLOR_R, BASE_TREE_COLOR_G, BASE_TREE_COLOR_B, BASE_TREE_COLOR_A = 0.5, 0.35, 0.05, 1.0 # Brown
+    BASE_TREE_DIAMETER = 0.4
+    BASE_TREE_HEIGHT = 2.5
+    BASE_TREE_COLOR_R, BASE_TREE_COLOR_G, BASE_TREE_COLOR_B, BASE_TREE_COLOR_A = 0.5, 0.35, 0.05, 1.0
 
     # Indicator Cylinders (Red/Green)
     INDICATOR_MIN_HEIGHT = 0.1
     INDICATOR_MAX_HEIGHT = .5
-    INDICATOR_DIAMETER = 0.15 # Diameter of red/green cylinders
-    # Offset to place them side-by-side. Slightly more than radius to have a small gap.
+    INDICATOR_DIAMETER = 0.15
     INDICATOR_OFFSET_X = INDICATOR_DIAMETER * 0.6
 
-    # Derived parameter: The range of height variation for indicator cylinders
     VARIABLE_HEIGHT_RANGE = INDICATOR_MAX_HEIGHT - INDICATOR_MIN_HEIGHT
 
     for i, (tree_pos, lambda_val) in enumerate(zip(trees_pos, lambda_values)):
-        # Original problem statement had `if score == 0: continue`.
-        # If lambda_val == 0 signifies "no tree" or "ignore", you might want to add this back.
-        # However, the height logic below will give min_height for lambda_val=0, which might be desired.
-        # For now, let's assume all lambda_values lead to a visualization.
 
-        # --- 1. Base Tree Trunk Marker ---
-        #trunk_marker = Marker()
-        #trunk_marker.header.frame_id = 'map'
-        #trunk_marker.header.stamp = rospy.Time.now()
-        #trunk_marker.ns = "tree_trunks"
-        #trunk_marker.id = i * 3 # Unique ID base
-        #trunk_marker.type = Marker.CYLINDER
-        #trunk_marker.action = Marker.ADD
-
+        """# --- Base Tree Trunk Marker ---
+        trunk_marker = Marker()
+        trunk_marker.header.frame_id = 'map'
+        trunk_marker.header.stamp = rospy.Time.now()
+        trunk_marker.ns = "tree_trunks"
+        trunk_marker.id = i * 3 # Unique ID base
+        trunk_marker.type = Marker.CYLINDER
+        trunk_marker.action = Marker.ADD
         # Position the base of the trunk at z=0, so its center is at z = BASE_TREE_HEIGHT / 2
-        #trunk_marker.pose.position = Point(x=tree_pos[0], y=tree_pos[1], z=BASE_TREE_HEIGHT / 2.0)
-        #trunk_marker.pose.orientation.w = 1.0
-        #trunk_marker.scale.x = BASE_TREE_DIAMETER
-        #trunk_marker.scale.y = BASE_TREE_DIAMETER
-        #trunk_marker.scale.z = BASE_TREE_HEIGHT
-        #trunk_marker.color.r = BASE_TREE_COLOR_R
-        #trunk_marker.color.g = BASE_TREE_COLOR_G
-        #trunk_marker.color.b = BASE_TREE_COLOR_B
-        #trunk_marker.color.a = BASE_TREE_COLOR_A
-        #markers.markers.append(trunk_marker)
+        trunk_marker.pose.position = Point(x=tree_pos[0], y=tree_pos[1], z=BASE_TREE_HEIGHT / 2.0)
+        trunk_marker.pose.orientation.w = 1.0
+        trunk_marker.scale.x = BASE_TREE_DIAMETER
+        trunk_marker.scale.y = BASE_TREE_DIAMETER
+        trunk_marker.scale.z = BASE_TREE_HEIGHT
+        trunk_marker.color.r = BASE_TREE_COLOR_R
+        trunk_marker.color.g = BASE_TREE_COLOR_G
+        trunk_marker.color.b = BASE_TREE_COLOR_B
+        trunk_marker.color.a = BASE_TREE_COLOR_A
+        markers.markers.append(trunk_marker)"""
 
-        # --- 2. Calculate Indicator Cylinder Heights ---
-        # Initialize with minimum height
+        # --- Calculate Indicator Cylinder Heights ---
         red_height = INDICATOR_MIN_HEIGHT
         green_height = INDICATOR_MIN_HEIGHT
 
-        # The top of the trunk cylinder is at z = BASE_TREE_HEIGHT
-        # (since its base is at 0 and height is BASE_TREE_HEIGHT)
         indicator_base_z = BASE_TREE_HEIGHT
 
         base = INDICATOR_MIN_HEIGHT
         span = VARIABLE_HEIGHT_RANGE
 
-        # sanity‐clamp in case of numerical drift
         p_red   = max(INDICATOR_MIN_HEIGHT, min(1.0, lambda_val[0]))
         p_green = max(INDICATOR_MIN_HEIGHT, min(1.0, lambda_val[1]))
 
         red_height   = base + span * p_red
         green_height = base + span * p_green
 
-        # --- 3. Red Indicator Cylinder ---
+        # --- Red Indicator Cylinder ---
         red_marker = Marker()
         red_marker.header.frame_id = 'map'
         red_marker.header.stamp = rospy.Time.now()
@@ -130,7 +112,6 @@ def create_tree_markers(trees_pos, lambda_values):
         red_marker.id = i * 3 + 1
         red_marker.type = Marker.CYLINDER
         red_marker.action = Marker.ADD
-        # Position its base at indicator_base_z, so its center is at indicator_base_z + height/2
         red_marker.pose.position = Point(
             x=tree_pos[0] - INDICATOR_OFFSET_X,
             y=tree_pos[1],
@@ -146,7 +127,7 @@ def create_tree_markers(trees_pos, lambda_values):
         red_marker.color.a = 1.0
         markers.markers.append(red_marker)
 
-        # --- 4. Green Indicator Cylinder ---
+        # --- Green Indicator Cylinder ---
         green_marker = Marker()
         green_marker.header.frame_id = 'map'
         green_marker.header.stamp = rospy.Time.now()
@@ -174,12 +155,9 @@ def update_robot_state(buffer):
     robot_pose = []
     while not len(robot_pose):
         try:
-            # Get the transform from 'map' to 'drone_base_link'
             trans = buffer.lookup_transform('map', 'drone_base_link', rospy.Time())
-            # Extract rotation
             (_, _, yaw) = tf.transformations.euler_from_quaternion([ trans.transform.rotation.x,  trans.transform.rotation.y,  trans.transform.rotation.z,  trans.transform.rotation.w])
             
-            # Update x_robot with the transform (x, y, yaw)
             robot_pose = [[trans.transform.translation.x], [trans.transform.translation.y], [yaw]]
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
             rospy.logwarn(f"Failed to get transform: {e}")

@@ -94,6 +94,7 @@ catkin_install_python(PROGRAMS
   multi_data_association_node_2classes.py
   kmeans_2classes.py
   multi_nmpc_ros_node_connectivity_2classes_no_cluster.py
+  multi_nmpc_ros_node_2classes.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

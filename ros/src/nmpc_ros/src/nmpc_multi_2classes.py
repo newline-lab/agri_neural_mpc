@@ -916,8 +916,8 @@ class NeuralMPC:
                 self.d_lambda2_dx(self.robot_positions)
                 # print(self.n_agent, ":", "\033[97m" + str(self.lambda2) + "\033[0m", "|", self.beta)
                 self.compute_minimum_spanning_tree() 
-                if self.n_agent==1:
-                    print("\033[97m" + str(self.span_tree) + "\033[0m")
+                # if self.n_agent==1:
+                #     print("\033[97m" + str(self.span_tree) + "\033[0m")
                 # Adjacency for
                 connections = np.where(self.span_tree > 0, 1, 0)
                 adj_dm = ca.DM(connections[self.n_agent-1])

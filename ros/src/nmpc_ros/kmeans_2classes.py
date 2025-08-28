@@ -36,6 +36,7 @@ class KMeansClusterNode:
         
         # subscibers
         self.lambda_value = None
+        self.latest_detection = None
         subscribers_net = []
         for n in range(1, self.n_agents+1):
             topic = f"/agent_{n}/lambda"
@@ -50,12 +51,22 @@ class KMeansClusterNode:
         Callback for lambda.
         """
         n = len(msg.data)
+        # if self.lambda_value is None:
+        #     self.lambda_value = msg.data[:n // 2]
+        # received = msg.data[:n // 2]
+        # lambda_curr = self.lambda_value
+        # result_max = np.maximum(received, lambda_curr) # DA CAMBIARE
+        # self.lambda_value = result_max
+
+        new_lambdas = msg.data[:n // 2]
+        new_times = msg.data[n // 2:]
         if self.lambda_value is None:
-            self.lambda_value = msg.data[:n // 2]
-        received = msg.data[:n // 2]
-        lambda_curr = self.lambda_value
-        result_max = np.maximum(received, lambda_curr)
-        self.lambda_value = result_max
+            self.lambda_value = np.array(new_lambdas)
+            self.latest_detection = np.array(new_times)
+        for i in range(n // 2):
+            if self.latest_detection[i] < new_times[i]:
+                self.lambda_value[i] = new_lambdas[i]
+                self.latest_detection[i] = new_times[i]
 
     def robots_state_update_thread(self):
         """Continuously update the robots' state using TF at 30 Hz."""
@@ -142,11 +153,13 @@ class KMeansClusterNode:
     
     def rerun_kmeans(self, idx):
         # Trova gli indici originali degli alberi non ancora visitati (lambda < 0.95)
-        unvisited_idxs = [i for i, val in enumerate(self.lambda_value) if val < 0.95]
+        unvisited_idxs = [i for i, val in enumerate(self.lambda_value) if val < 0.95 and val > 0.05]
 
         # Se gli alberi non visitati sono meno dei robot, il clustering non ha senso
         if len(unvisited_idxs) < self.n_agents:
             return
+        
+        print("\033[97m" + "--- REPLANNING ---" + "\033[0m")
 
         # Estrai le posizioni solo degli alberi non ancora visitati
         unvisited_positions = self.tree_positions[unvisited_idxs]
@@ -240,7 +253,8 @@ class KMeansClusterNode:
             reassignment_needed = False
             if self.dict_assignment is not None and self.lambda_value is not None:
                 for robot_idx, trees in self.dict_assignment.items():
-                    if np.all(self.lambda_value[trees] >= 0.95): # reassign if all labdas are sufficiently high
+                    # if np.all(self.lambda_value[trees] >= 0.95): # reassign if all labdas are sufficiently high
+                    if np.all((self.lambda_value[trees] >= 0.95) | (self.lambda_value[trees] <= 0.05)): # reassign if all lambdas are sufficiently high OR low 
                         reassignment_needed = True
 
             # Reassignment (if needed)

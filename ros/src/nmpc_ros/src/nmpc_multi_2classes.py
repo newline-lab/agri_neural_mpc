@@ -398,6 +398,7 @@ class NeuralMPC:
         # Distanza 
         # return a * (1-lambda_c) * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
         knowledge_term = (lambda_c>=0.5)*(1-lambda_c) + (lambda_c<0.5)*lambda_c
+        knowledge_term = (knowledge_term>=0.05)*knowledge_term 
         return a * knowledge_term * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
     
     def d_lambda2_dx(self, positions):
@@ -604,6 +605,7 @@ class NeuralMPC:
         # Penalty term for cells
         penalty_cells = 0 # unassigned
         aggregation = 0   # assigned
+        nearest_tree_attraction = 0 # closest tree
 
         # Not assigned trees (ID)
         not_assigned_tree = [num for num in list(range(num_trees)) if num not in assigned_tree]
@@ -679,6 +681,19 @@ class NeuralMPC:
                 # aggregation term for assigned cells 
                 aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
 
+        # # Calcola distanze quadrate dalla posizione iniziale a tutti gli alberi
+        # w_nearest_attract = 1e1      # Weight for nearest tree attraction
+        # sq_dist_to_targets = ca.sum1((X0[:2] - trees_dm.T)**2)
+        # min_sq_dist = ca.mmin(sq_dist_to_targets)
+        # # 2. Define sigmoid parameters
+        # threshold_sq_dist = 81.0
+        # sigmoid_steepness = 10.0
+        # # 3. Calculate the sigmoid factor
+        # # This factor smoothly goes from ~0 (when min_sq_dist << threshold) to ~1 (when min_sq_dist >> threshold)
+        # sigmoid_factor = 1.0 / (1.0 + ca.exp(-sigmoid_steepness * (min_sq_dist - threshold_sq_dist)))
+        # # 4. Apply the modulation to the attraction term
+        # modulated_attraction_term = w_nearest_attract * sigmoid_factor
+            
         # Compute entropy terms for the objective.
         entropy_future = self.entropy(ca.vcat([*lambda_evol[1:]]))
         # entropy_term = ca.sum1( ca.vcat([ca.exp(-2*i)*ca.DM.ones(num_trees) for i in range(steps)]) * entropy_future) * w_entropy
@@ -696,6 +711,7 @@ class NeuralMPC:
         obj += entropy_term
         # obj += penalty_cells
         obj += aggregation
+        # obj += modulated_attraction_term
         opti.minimize(obj)
 
         # Solver options

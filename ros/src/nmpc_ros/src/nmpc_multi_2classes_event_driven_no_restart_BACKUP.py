@@ -400,7 +400,7 @@ class NeuralMPC:
         # Distanza 
         # return a * (1-lambda_c) * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
         knowledge_term = (lambda_c>=0.5)*(1-lambda_c) + (lambda_c<0.5)*lambda_c
-        knowledge_term = (knowledge_term>=0.05)*knowledge_term 
+        knowledge_term = (knowledge_term>0.05)*knowledge_term 
         return a * knowledge_term * ca.sqrt((x - x_c)**2 + (y - y_c)**2 + 1e-6) / d
     
     def d_lambda2_dx(self, positions):
@@ -555,7 +555,7 @@ class NeuralMPC:
     # sostituisci lambda2 e beta con x_traj, y_traj e neigh
     # x_traj e y_traj sono le posizioni x e y di tutti i robot
     # neigh è un vettore di 0 e 1, che si usa nel vincolo di connessione per renderlo effettivo o no
-    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, steps=10):
+    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, assigned_mask, steps=10):
         nx_local = 3                           # For clarity in this function
         # n_state = nx_local * 2               # 6-dimensional state: [x, y, theta, vx, vy, omega]
         n_state = nx_local                     # 3-dimensional state: [x, y, theta]
@@ -567,10 +567,10 @@ class NeuralMPC:
         X = opti.variable(n_state, steps + 1)
         U = opti.variable(n_control, steps)
 
-        x_init_guess = ca.repmat(x0, 1, steps + 1) # Ripete x0 per tutti gli stati della traiettoria
-        u_init_guess = ca.DM.zeros(n_control, steps) # Controlli iniziali a zero
-        opti.set_initial(X, x_init_guess)
-        opti.set_initial(U, u_init_guess)
+        # x_init_guess = ca.repmat(x0, 1, steps + 1) # Ripete x0 per tutti gli stati della traiettoria
+        # u_init_guess = ca.DM.zeros(n_control, steps) # Controlli iniziali a zero
+        # opti.set_initial(X, x_init_guess)
+        # opti.set_initial(U, u_init_guess)
 
         # Parameter vector: initial state and tree beliefs.
         num_trees = trees.shape[0]
@@ -578,13 +578,15 @@ class NeuralMPC:
         num_x_traj = x_traj.shape[0]
         num_y_traj = y_traj.shape[0]
         num_span = span.shape[0]
-        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span)
+        num_assigned_mask = assigned_mask.shape[0]
+        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span + num_assigned_mask)
         X0 = P0[: n_state]
         L0 = P0[n_state:n_state+num_trees]
         N0 = P0[n_state+num_trees:n_state+num_trees+num_neighbors]
         TX0 = P0[n_state+num_trees+num_neighbors:n_state+num_trees+num_neighbors+num_x_traj]
         TY0 = P0[n_state+num_trees+num_neighbors+num_x_traj:n_state+num_trees+num_neighbors+num_x_traj+num_y_traj]
-        S0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj:]
+        S0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj:n_state+num_trees+num_neighbors+num_x_traj+num_y_traj+num_span]
+        AT0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj+num_span:]
         # Initialize belief evolution.
         lambda_evol = [L0]
 
@@ -674,14 +676,20 @@ class NeuralMPC:
             lambda_next = self.bayes(lambda_evol[-1], z_k_binary[i*trees_dm.shape[0]:(i+1)*trees_dm.shape[0]])
             lambda_evol.append(lambda_next)
 
+        # # Limited area (Cells) and attraction
+        # for i in range(steps+1):
+        #     # for n_a in not_assigned_tree:
+        #     #     # penalty for unassigned cells
+        #     #     penalty_cells += self.penalty_2d(X[0, i], X[1, i], self.trees_pos[n_a][0], self.trees_pos[n_a][1], p=10, s=0.9, a=5)
+        #     for a_a in assigned_tree:
+        #         # aggregation term for assigned cells 
+        #         aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
         # Limited area (Cells) and attraction
         for i in range(steps+1):
-            # for n_a in not_assigned_tree:
-            #     # penalty for unassigned cells
-            #     penalty_cells += self.penalty_2d(X[0, i], X[1, i], self.trees_pos[n_a][0], self.trees_pos[n_a][1], p=10, s=0.9, a=5)
-            for a_a in assigned_tree:
+            # for a_a in assigned_tree:
+            for a_a in range(num_trees):
                 # aggregation term for assigned cells 
-                aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
+                aggregation += AT0[a_a] * self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.2) # / len(assigned_tree) #a=13
 
         # # Calcola distanze quadrate dalla posizione iniziale a tutti gli alberi
         # w_nearest_attract = 1e1      # Weight for nearest tree attraction
@@ -700,14 +708,21 @@ class NeuralMPC:
         entropy_future = self.entropy(ca.vcat([*lambda_evol[1:]]))
         # entropy_term = ca.sum1( ca.vcat([ca.exp(-2*i)*ca.DM.ones(num_trees) for i in range(steps)]) * entropy_future) * w_entropy
         #--------------------------- Annulla la funzione degli alberi che non mi interessano
-        mask = ca.DM.zeros(num_trees * steps, 1)
-        for step in range(steps):
-            for i in assigned_tree:
-                idx = i + step * num_trees  # indices step successivi
-                mask[idx] = 1
+        # mask = ca.DM.zeros(num_trees * steps, 1)
+        # for step in range(steps):
+        #     for i in assigned_tree:
+        #         idx = i + step * num_trees  # indices step successivi
+        #         mask[idx] = 1
+        # exp_weights = ca.vcat([ca.exp(-2*i) * ca.DM.ones(num_trees, 1) for i in range(steps)])
+        # entropy_term = ca.logsumexp((mask * exp_weights) * entropy_future) * w_entropy
+        
+        # exp_weights = ca.vcat([ca.exp(-2*i) * ca.DM.ones(num_trees, 1) for i in range(steps)])
+        # entropy_term = ca.logsumexp((AT0 * exp_weights) * entropy_future) * w_entropy
+
+        assigned_mask_expanded = ca.vcat([AT0 for _ in range(steps)])
         exp_weights = ca.vcat([ca.exp(-2*i) * ca.DM.ones(num_trees, 1) for i in range(steps)])
-        # entropy_term = ca.sum1((mask * exp_weights) * entropy_future) * w_entropy
-        entropy_term = ca.logsumexp((mask * exp_weights) * entropy_future) * w_entropy
+        # Usa la nuova maschera espansa
+        entropy_term = ca.logsumexp((assigned_mask_expanded * exp_weights) * entropy_future) * w_entropy
         #---------------------------        
         # Add terms to the objective.
         obj += entropy_term
@@ -797,7 +812,7 @@ class NeuralMPC:
         # }
         opti.solver("ipopt", options)
         # Set the parameter values.
-        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span))
+        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span, assigned_mask))
         sol = opti.solve()
 
         # check solution        
@@ -831,6 +846,11 @@ class NeuralMPC:
         while self.current_state is None and not rospy.is_shutdown():
             rospy.sleep(0.05)
         rospy.loginfo("GPS data received.")
+
+        # First assignment
+        while self.assigned is None and not rospy.is_shutdown():
+            rospy.sleep(0.05)
+        prev_assigned = self.assigned.copy()
 
         # ---------------------------
         # Load the Learned Neural Network Models
@@ -980,7 +1000,11 @@ class NeuralMPC:
                 connections = np.where(self.span_tree > 0, 1, 0)
                 adj_dm = ca.DM(connections[self.n_agent-1])
                 step_start_time = time.time()
-                if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
+                assigned_dm = [1 if i in self.assigned else 0 for i in range(self.trees_pos.shape[0])]
+                assigned_dm = ca.DM(assigned_dm)
+                if not np.array_equal(self.assigned, prev_assigned):
+                    prev_assigned = self.assigned.copy()
+                if warm_start: # MPC initialization
                     # Repeat start
                     x_traj_flat = np.repeat(self.robot_positions[::3], self.N+1)
                     y_traj_flat = np.repeat(self.robot_positions[1::3], self.N+1)
@@ -988,9 +1012,8 @@ class NeuralMPC:
                     x_traj_dm = ca.DM(x_traj_flat)
                     y_traj_dm = ca.DM(y_traj_flat)
                     # MPC
-                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, assigned_dm, self.mpc_horizon)
                     warm_start = False
-                    prev_assigned = self.assigned.copy()
                 else: # MPC step
                     # Move to accomplish the task (if not completed)
                     if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95):
@@ -1008,7 +1031,7 @@ class NeuralMPC:
                         y_traj_dm = ca.DM(y_traj_flat)
                         # MPC
                         # print(self.n_agent, ": ", adj_dm)
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
+                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, assigned_dm), x_dec, lam)
                         # mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
 
                 # msg = Int32()

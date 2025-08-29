@@ -3,7 +3,8 @@ import os
 script_dir = os.path.dirname(os.path.abspath(__file__))  
 src_path = os.path.join(script_dir, "src")  
 sys.path.append(src_path)
-from nmpc_multi_2classes import NeuralMPC
+# from nmpc_multi_2classes import NeuralMPC
+from nmpc_multi_2classes_event_driven import NeuralMPC
 
 if __name__ == '__main__':
     # Run the simulation with the default parameters

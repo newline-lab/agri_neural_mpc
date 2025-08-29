@@ -712,7 +712,10 @@ class NeuralMPC:
         # Add terms to the objective.
         obj += entropy_term
         # obj += penalty_cells
-        obj += aggregation
+        if len(self.assigned) < 3:
+            obj += 3*aggregation
+        else:
+            obj += aggregation
         # obj += modulated_attraction_term
         opti.minimize(obj)
 
@@ -941,7 +944,7 @@ class NeuralMPC:
                     elif prev_val > self.tree_rejection_threshold and curr_val <= self.tree_rejection_threshold:
                         should_send_lambda = True
                         send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
-                        rospy.loginfo(f"\033[91mTree {i} rejected! λ={curr_val:.3f}\033[0m")
+                        rospy.loginfo(f"\033[92mTree {i} rejected! λ={curr_val:.3f}\033[0m")
                         break
             # Regola 2: Cambiamento cumulativo dell'informazione
             # if not should_send_lambda and prev_lambda is not None:

@@ -930,18 +930,19 @@ class NeuralMPC:
             send_reason = ""
             # Regola 1: Completamento/rifiuto di un albero
             for i, (prev_val, curr_val) in enumerate(zip(prev_lambda, current_lambda)):
-                # Albero completato (da <0.95 a >=0.95)
-                if prev_val < self.tree_completion_threshold and curr_val >= self.tree_completion_threshold:
-                    should_send_lambda = True
-                    send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
-                    rospy.loginfo(f"\033[92mTree {i} completed! λ={curr_val:.3f}\033[0m")
-                    break
-                # Albero rifiutato (da >0.05 a <=0.05)
-                elif prev_val > self.tree_rejection_threshold and curr_val <= self.tree_rejection_threshold:
-                    should_send_lambda = True
-                    send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
-                    rospy.loginfo(f"\033[91mTree {i} rejected! λ={curr_val:.3f}\033[0m")
-                    break
+                if i in self.assigned: # Solo albero assegnato
+                    # Albero completato (da <0.95 a >=0.95)
+                    if prev_val < self.tree_completion_threshold and curr_val >= self.tree_completion_threshold:
+                        should_send_lambda = True
+                        send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
+                        rospy.loginfo(f"\033[92mTree {i} completed! λ={curr_val:.3f}\033[0m")
+                        break
+                    # Albero rifiutato (da >0.05 a <=0.05)
+                    elif prev_val > self.tree_rejection_threshold and curr_val <= self.tree_rejection_threshold:
+                        should_send_lambda = True
+                        send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
+                        rospy.loginfo(f"\033[91mTree {i} rejected! λ={curr_val:.3f}\033[0m")
+                        break
             # Regola 2: Cambiamento cumulativo dell'informazione
             # if not should_send_lambda and prev_lambda is not None:
             #     # Calcola il cambiamento di informazione (puoi usare diverse metriche)

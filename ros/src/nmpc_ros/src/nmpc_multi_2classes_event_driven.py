@@ -894,7 +894,7 @@ class NeuralMPC:
         # event driven communication values
         self.last_sent_lambda = None           # Ultimo lambda inviato
         self.cumulative_info_change = 0.0      # Cambiamento cumulativo di informazione
-        self.info_threshold = 0.1              # Soglia per il cambiamento cumulativo
+        self.info_threshold = 0.5              # Soglia per il cambiamento cumulativo
         self.tree_completion_threshold = 0.95  # Soglia per considerare un albero maturo
         self.tree_rejection_threshold = 0.05   # Soglia per considerare un albero acerbo
         self.last_tree_states = None           # Stati precedenti degli alberi per rilevare completamenti
@@ -967,30 +967,40 @@ class NeuralMPC:
                     if prev_val < self.tree_completion_threshold and curr_val >= self.tree_completion_threshold:
                         should_send_lambda = True
                         send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
-                        rospy.loginfo(f"\033[92mTree {i} completed! λ={curr_val:.3f}\033[0m")
+                        # rospy.loginfo(f"\033[92mTree {i} completed! λ={curr_val:.3f}\033[0m")
                         break
                     # Albero rifiutato (da >0.05 a <=0.05)
                     elif prev_val > self.tree_rejection_threshold and curr_val <= self.tree_rejection_threshold:
                         should_send_lambda = True
                         send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
-                        rospy.loginfo(f"\033[92mTree {i} rejected! λ={curr_val:.3f}\033[0m")
+                        # rospy.loginfo(f"\033[92mTree {i} rejected! λ={curr_val:.3f}\033[0m")
                         break
+                    # elif prev_val >= 0.95 and curr_val >= 0.99:
+                    #     should_send_lambda = True
+                    #     send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
+                    #     # rospy.loginfo(f"\033[92mTree {i} rejected! λ={curr_val:.3f}\033[0m")
+                    #     break
+                    # elif prev_val <= 0.05 and curr_val <= 0.01:
+                    #     should_send_lambda = True
+                    #     send_reason = f"Tree {i} completed (λ={curr_val:.3f})"
+                    #     # rospy.loginfo(f"\033[92mTree {i} rejected! λ={curr_val:.3f}\033[0m")
+                    #     break
             # Regola 2: Cambiamento cumulativo dell'informazione
-            # if not should_send_lambda and prev_lambda is not None:
-            #     # Calcola il cambiamento di informazione (puoi usare diverse metriche)
-            #     # Opzione A: Distanza euclidea
-            #     info_change = np.linalg.norm(current_lambda - prev_lambda)
-            #     # Opzione B: Differenza di entropia (commentata, usa una delle due)
-            #     # prev_entropy = -np.sum(prev_lambda * np.log(prev_lambda + 1e-8) + 
-            #     #                       (1-prev_lambda) * np.log(1-prev_lambda + 1e-8))
-            #     # curr_entropy = -np.sum(current_lambda * np.log(current_lambda + 1e-8) + 
-            #     #                       (1-current_lambda) * np.log(1-current_lambda + 1e-8))
-            #     # info_change = abs(curr_entropy - prev_entropy)
-            #     self.cumulative_info_change += info_change
-            #     if self.cumulative_info_change >= self.info_threshold:
-            #         should_send_lambda = True
-            #         send_reason = f"Cumulative info change threshold reached ({self.cumulative_info_change:.3f})"
-            #         self.cumulative_info_change = 0.0  # Reset del contatore
+            if not should_send_lambda and prev_lambda is not None:
+                # Calcola il cambiamento di informazione (puoi usare diverse metriche)
+                # Opzione A: Distanza euclidea
+                info_change = np.linalg.norm(current_lambda - prev_lambda)
+                # Opzione B: Differenza di entropia (commentata, usa una delle due)
+                # prev_entropy = -np.sum(prev_lambda * np.log(prev_lambda + 1e-8) + 
+                #                       (1-prev_lambda) * np.log(1-prev_lambda + 1e-8))
+                # curr_entropy = -np.sum(current_lambda * np.log(current_lambda + 1e-8) + 
+                #                       (1-current_lambda) * np.log(1-current_lambda + 1e-8))
+                # info_change = abs(curr_entropy - prev_entropy)
+                self.cumulative_info_change += info_change
+                if self.cumulative_info_change >= self.info_threshold:
+                    should_send_lambda = True
+                    send_reason = f"Cumulative info change threshold reached ({self.cumulative_info_change:.3f})"
+                    self.cumulative_info_change = 0.0  # Reset del contatore
             # Primo step: invia sempre
             if self.last_sent_lambda is None:
                 should_send_lambda = True
@@ -1060,17 +1070,6 @@ class NeuralMPC:
                 self.traj_x = None
                 self.traj_y = None
 
-                # Sync msg
-                msg = Trajectory()
-                msg.header = Header()
-                msg.header.stamp = rospy.Time.now()
-                msg.id = self.n_agent
-                msg.positions_x = x_traj[0, :].full().flatten().tolist()
-                msg.positions_y = x_traj[1, :].full().flatten().tolist()
-                msg.theta = x_traj[2, :].full().flatten().tolist()
-                self.ok_mpc.publish(msg)
-                # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
-
                 durations.append(time.time() - step_start_time)
                 # Log the MPC velocity command.
                 u_np = np.array(u.full()).flatten()
@@ -1090,7 +1089,25 @@ class NeuralMPC:
                     #     if np.abs(x_k[0]-msg.positions_x[0]) > 0.1:
                     #         rospy.loginfo("\033[92m" + " ******** VALORI DIVERSI" + "\033[0m")
                 else:
+                    should_send_lambda = True
+                    cmd_pose = x_traj[:,0]
                     rospy.loginfo("\033[92mAgent " + str(self.n_agent) + ": done\033[0m")
+
+                # Sync msg
+                msg = Trajectory()
+                msg.header = Header()
+                msg.header.stamp = rospy.Time.now()
+                msg.id = self.n_agent
+                if closest_tree_pos is not None:
+                    msg.positions_x = x_traj[0, :].full().flatten().tolist()
+                    msg.positions_y = x_traj[1, :].full().flatten().tolist()
+                    msg.theta = x_traj[2, :].full().flatten().tolist()
+                else:
+                    msg.positions_x = [cmd_pose[0] for _ in range(self.N+1)]
+                    msg.positions_y = [cmd_pose[1] for _ in range(self.N+1)]
+                    msg.theta = [cmd_pose[2] for _ in range(self.N+1)]
+                self.ok_mpc.publish(msg)
+                # rospy.loginfo("\033[92mOk " + str(self.n_agent) + " \033[0m")
 
                 # Publish predicted path.
                 predicted_path_msg = create_path_from_mpc_prediction(x_traj[:self.nx, 1:])
@@ -1121,8 +1138,8 @@ class NeuralMPC:
                 sum_trans_speed += trans_speed
                 self.total_commands += 1
 
-                curr_x = float(x_traj[0, 1])
-                curr_y = float(x_traj[1, 1])
+                curr_x = float(cmd_pose[0])
+                curr_y = float(cmd_pose[1])
                 distance_step = math.sqrt((curr_x - prev_x)**2 + (curr_y - prev_y)**2)
                 self.total_distance += distance_step
                 prev_x, prev_y = curr_x, curr_y
@@ -1142,6 +1159,7 @@ class NeuralMPC:
             # lambda_msg.data = np.concatenate([self.lambda_k.full().flatten(), self.latest_detection]) # self.lambda_k.full().flatten()
             # self.lambda_pub.publish(lambda_msg)
 
+                # should_send_lambda = True # Attiva per togliere event based (consenso continuo)
                 if should_send_lambda:
                     lambda_msg = Float64MultiArray()
                     lambda_msg.data = np.concatenate([current_lambda, self.latest_detection])

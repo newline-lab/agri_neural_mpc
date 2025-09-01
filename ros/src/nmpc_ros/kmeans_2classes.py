@@ -156,7 +156,8 @@ class KMeansClusterNode:
         unvisited_idxs = [i for i, val in enumerate(self.lambda_value) if val < 0.95 and val > 0.05]
 
         # Se gli alberi non visitati sono meno dei robot, il clustering non ha senso
-        if len(unvisited_idxs) < self.n_agents:
+        # if len(unvisited_idxs) < self.n_agents:
+        if len(unvisited_idxs) < 5: # se sono troppi pochi non fare clustering
             return
         
         print("\033[97m" + "--- REPLANNING ---" + "\033[0m")
@@ -266,6 +267,12 @@ class KMeansClusterNode:
             if self.dict_assignment is not None:
                 for robot_idx, trees in self.dict_assignment.items():
                     self.publish_cluster(robot_idx, trees)
+
+            # wait for 5 seconds before new assignment
+            if reassignment_needed == True:
+                    now = rospy.get_time()
+                    while not rospy.is_shutdown() and (rospy.get_time() - now < 5):
+                        self.rate.sleep()
 
             self.rate.sleep()
 

@@ -547,6 +547,31 @@ class NeuralMPC:
             lambda2s = ca.vertcat(lambda2s, lambda_k)
             betas = ca.vertcat(betas, beta_k)
         return lambda2s, betas
+    
+
+    def find_closest_assigned_tree_in_range(self, curr_x, curr_y):
+        """
+        Find the closest assigned tree with lambda_k between 0.05 and 0.095.
+        Args:
+            current_position: Current robot position [x, y, theta] or [x, y]
+        Returns:
+            closest_tree_pos: [x, y] position of the closest tree in range, or None if no tree found
+        """
+        if self.assigned is None or len(self.assigned) == 0:
+            return None
+        # Extract current x, y position
+        lambda_values = self.lambda_k.full().flatten()
+        closest_tree_pos = None
+        min_distance = float('inf')
+        # Check each assigned tree
+        for tree_id in self.assigned:
+            if 0.05 <= lambda_values[tree_id] <= 0.95:
+                tree_x, tree_y = self.trees_pos[tree_id]
+                distance = np.sqrt((curr_x - tree_x)**2 + (curr_y - tree_y)**2)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_tree_pos = [tree_x, tree_y]
+        return closest_tree_pos
 
 
     # ---------------------------
@@ -555,7 +580,7 @@ class NeuralMPC:
     # sostituisci lambda2 e beta con x_traj, y_traj e neigh
     # x_traj e y_traj sono le posizioni x e y di tutti i robot
     # neigh è un vettore di 0 e 1, che si usa nel vincolo di connessione per renderlo effettivo o no
-    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, steps=10):
+    def mpc_opt(self, g_nn, trees, lb, ub, x0, lambda_vals, neighbors_positions, assigned_tree, x_traj, y_traj, span, closest_tree_pos, steps=10):
         nx_local = 3                           # For clarity in this function
         # n_state = nx_local * 2               # 6-dimensional state: [x, y, theta, vx, vy, omega]
         n_state = nx_local                     # 3-dimensional state: [x, y, theta]
@@ -578,13 +603,15 @@ class NeuralMPC:
         num_x_traj = x_traj.shape[0]
         num_y_traj = y_traj.shape[0]
         num_span = span.shape[0]
-        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span)
+        num_closest_tree_pos = closest_tree_pos.shape[0]
+        P0 = opti.parameter(n_state + num_trees + num_neighbors + num_x_traj + num_y_traj + num_span + num_closest_tree_pos)
         X0 = P0[: n_state]
         L0 = P0[n_state:n_state+num_trees]
         N0 = P0[n_state+num_trees:n_state+num_trees+num_neighbors]
         TX0 = P0[n_state+num_trees+num_neighbors:n_state+num_trees+num_neighbors+num_x_traj]
         TY0 = P0[n_state+num_trees+num_neighbors+num_x_traj:n_state+num_trees+num_neighbors+num_x_traj+num_y_traj]
-        S0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj:]
+        S0 = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj:n_state+num_trees+num_neighbors+num_x_traj+num_y_traj+num_span]
+        TARGET_TREE = P0[n_state+num_trees+num_neighbors+num_x_traj+num_y_traj+num_span:]
         # Initialize belief evolution.
         lambda_evol = [L0]
 
@@ -675,13 +702,18 @@ class NeuralMPC:
             lambda_evol.append(lambda_next)
 
         # Limited area (Cells) and attraction
+        # for i in range(steps+1):
+        #     # for n_a in not_assigned_tree:
+        #     #     # penalty for unassigned cells
+        #     #     penalty_cells += self.penalty_2d(X[0, i], X[1, i], self.trees_pos[n_a][0], self.trees_pos[n_a][1], p=10, s=0.9, a=5)
+        #     for a_a in assigned_tree:
+        #         # aggregation term for assigned cells 
+        #         aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
+
+        # New aggregation
+        a = 0.001
         for i in range(steps+1):
-            # for n_a in not_assigned_tree:
-            #     # penalty for unassigned cells
-            #     penalty_cells += self.penalty_2d(X[0, i], X[1, i], self.trees_pos[n_a][0], self.trees_pos[n_a][1], p=10, s=0.9, a=5)
-            for a_a in assigned_tree:
-                # aggregation term for assigned cells 
-                aggregation += self.aggregation_2d(X[0, i], X[1, i], lambda_evol[i], idx=a_a, a=0.1) # / len(assigned_tree) #a=13
+            aggregation += a * ca.sqrt((X[0, i] - (TARGET_TREE[0]-2.0))**2 + (X[1, i] - TARGET_TREE[1])**2 + 1e-6)
 
         # # Calcola distanze quadrate dalla posizione iniziale a tutti gli alberi
         # w_nearest_attract = 1e1      # Weight for nearest tree attraction
@@ -712,10 +744,7 @@ class NeuralMPC:
         # Add terms to the objective.
         obj += entropy_term
         # obj += penalty_cells
-        if len(self.assigned) < 3:
-            obj += 3*aggregation
-        else:
-            obj += aggregation
+        obj += aggregation
         # obj += modulated_attraction_term
         opti.minimize(obj)
 
@@ -800,7 +829,7 @@ class NeuralMPC:
         # }
         opti.solver("ipopt", options)
         # Set the parameter values.
-        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span))
+        opti.set_value(P0, ca.vertcat(x0, lambda_vals, neighbors_positions, x_traj, y_traj, span, closest_tree_pos))
         sol = opti.solve()
 
         # check solution        
@@ -983,7 +1012,16 @@ class NeuralMPC:
                 connections = np.where(self.span_tree > 0, 1, 0)
                 adj_dm = ca.DM(connections[self.n_agent-1])
                 step_start_time = time.time()
+                ### Find closest assigned tree
+                closest_tree_pos = self.find_closest_assigned_tree_in_range(current_state[0], current_state[1])
+                if closest_tree_pos is not None:
+                    closest_tree_pos_dm = ca.DM(closest_tree_pos)
+                else: # if not assigned stay still
+                    closest_tree_pos_dm = ca.DM(current_state[0:2])
+                ###
                 if warm_start or not np.array_equal(self.assigned, prev_assigned): # MPC initialization or reinitialization
+                    if warm_start is False:
+                        should_send_lambda = True
                     # Repeat start
                     x_traj_flat = np.repeat(self.robot_positions[::3], self.N+1)
                     y_traj_flat = np.repeat(self.robot_positions[1::3], self.N+1)
@@ -991,7 +1029,7 @@ class NeuralMPC:
                     x_traj_dm = ca.DM(x_traj_flat)
                     y_traj_dm = ca.DM(y_traj_flat)
                     # MPC
-                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
+                    mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, closest_tree_pos_dm, self.mpc_horizon)
                     warm_start = False
                     prev_assigned = self.assigned.copy()
                 else: # MPC step
@@ -1011,7 +1049,7 @@ class NeuralMPC:
                         y_traj_dm = ca.DM(y_traj_flat)
                         # MPC
                         # print(self.n_agent, ": ", adj_dm)
-                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm), x_dec, lam)
+                        u, x_traj, x_dec, lam = mpc_step(ca.vertcat(x_k, self.lambda_k, ca.DM(self.neighbors_pos), x_traj_dm, y_traj_dm, adj_dm, closest_tree_pos_dm), x_dec, lam)
                         # mpc_step, u, x_traj, x_dec, lam = self.mpc_opt(g_nn, self.trees_pos, lb, ub, x_k, self.lambda_k, self.neighbors_pos, self.assigned, x_traj_dm, y_traj_dm, adj_dm, self.mpc_horizon)
 
                 # msg = Int32()
@@ -1038,7 +1076,8 @@ class NeuralMPC:
                 u_np = np.array(u.full()).flatten()
 
                 # Compute the command pose.
-                if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
+                # if np.any(self.lambda_k.full().flatten()[self.assigned] < 0.95): # Stay still if task completed
+                if closest_tree_pos is not None:
                     cmd_pose = x_traj[:,1] # x_k + self.dt * u[:, 0]  # x_traj[:,1] # F_(x_k, u[:, 0])
                     # if self.n_agent == 2: # debug
                     #     print("====================")

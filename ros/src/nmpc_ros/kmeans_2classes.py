@@ -18,7 +18,7 @@ class KMeansClusterNode:
 
         # Inizializza ROS e il rate di esecuzione
         rospy.init_node('kmeans_cluster_node', anonymous=True)
-        self.rate = rospy.Rate(1)
+        self.rate = rospy.Rate(2)
         self.n_agents = rospy.get_param('~n_agents', 1)
 
         # Positions

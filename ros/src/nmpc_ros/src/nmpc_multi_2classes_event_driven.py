@@ -166,6 +166,8 @@ class NeuralMPC:
         self.traj_x = None
         self.traj_y = None
 
+        self.send_counter = 0
+
     # ---------------------------
     # Callback Functions
     # ---------------------------
@@ -1167,9 +1169,13 @@ class NeuralMPC:
                     # Aggiorna stato per prossime decisioni
                     self.last_sent_lambda = current_lambda.copy()
                     rospy.loginfo(f"\033[94mLambda sent: {send_reason}\033[0m")
+                    if closest_tree_pos is not None:
+                        self.send_counter += 1
 
                 prev_lambda = self.lambda_k.full().flatten().copy()
-            
+
+                # Print cumulative number of sent data
+                # print(str(self.n_agent) + " sent: " + str(self.send_counter))            
             rate.sleep()
 
         return all_trajectories, self.entropy_history, self.lambda_history, durations, g_nn, self.trees_pos, lb, ub

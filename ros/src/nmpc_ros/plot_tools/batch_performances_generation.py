@@ -7,6 +7,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker  # For formatting y-axis if needed
 
+# ===================== Configuration =====================
+# Distance is computed after resampling time,x,y to a uniform grid:
+DIST_SAMPLE_DT = 1.0            # seconds, e.g. 1.0 for 1 Hz
+DIST_SKIP_FIRST_SECONDS = 0.0    # e.g. 20.0 to ignore first 20s warm-up
+# =========================================================
+
 # Make plots look a bit nicer
 plt.style.use('seaborn-v0_8')
 
@@ -21,7 +27,6 @@ def load_performance_metrics(file_path):
                     key = row[0].strip()
                     try:
                         value_str = row[1].strip().strip('"').strip("'")
-                        # tenta float, se fallisce lascia la stringa
                         try:
                             value = float(value_str)
                         except ValueError:
@@ -37,7 +42,7 @@ def load_performance_metrics(file_path):
         print(f"Error reading performance metrics file {file_path}: {e}")
         return None
 
-    # Chiavi richieste (se mancano, lasciale semplicemente assenti)
+    # required keys (if missing, leave absent)
     required_keys = [
         "Total Execution Time (s)", "Total Distance (m)",
         "Average Waypoint-to-Waypoint Time (s)", "Final Entropy",
@@ -76,6 +81,96 @@ def load_average_velocity(vel_file_path):
         print(f"Error loading or processing velocity file {vel_file_path}: {e}")
         return np.nan
 
+def compute_distance_from_plot_data_resampled(plot_data_file_path, dt=DIST_SAMPLE_DT, skip_first_seconds=DIST_SKIP_FIRST_SECONDS):
+    """
+    Compute total path length from *_plot_data.csv by:
+      1) parsing time, x, y
+      2) optionally skipping the first `skip_first_seconds`
+      3) resampling at uniform dt seconds via linear interpolation (np.interp)
+      4) summing Euclidean step lengths between consecutive resampled points
+
+    Returns: float (meters) or np.nan
+    """
+    try:
+        with open(plot_data_file_path, "r") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+
+        # Find header
+        header_idx = -1
+        for i, ln in enumerate(lines):
+            if ln.startswith("time,x,y,theta"):
+                header_idx = i
+                break
+        if header_idx == -1:
+            print(f"Warning: header 'time,x,y,theta,...' not found in {plot_data_file_path}")
+            return np.nan
+
+        header = lines[header_idx].split(",")
+        try:
+            ix_t = header.index("time")
+            ix_x = header.index("x")
+            ix_y = header.index("y")
+        except ValueError:
+            print(f"Warning: missing time/x/y columns in header of {plot_data_file_path}")
+            return np.nan
+
+        # Parse numeric rows
+        t_list, x_list, y_list = [], [], []
+        for ln in lines[header_idx + 1:]:
+            parts = ln.split(",")
+            if len(parts) <= max(ix_t, ix_x, ix_y):
+                continue
+            try:
+                t_list.append(float(parts[ix_t]))
+                x_list.append(float(parts[ix_x]))
+                y_list.append(float(parts[ix_y]))
+            except ValueError:
+                continue
+
+        if len(t_list) < 2:
+            return np.nan
+
+        t = np.asarray(t_list, dtype=float)
+        x = np.asarray(x_list, dtype=float)
+        y = np.asarray(y_list, dtype=float)
+
+        # Ensure strictly increasing time (deduplicate)
+        t, uniq_idx = np.unique(t, return_index=True)
+        x = x[uniq_idx]
+        y = y[uniq_idx]
+        if t.size < 2:
+            return np.nan
+
+        # Optional skip of the initial window
+        t0 = t[0]
+        if skip_first_seconds > 0:
+            start_time = t0 + float(skip_first_seconds)
+            if start_time >= t[-1]:
+                return np.nan
+        else:
+            start_time = t0
+
+        # Uniform time grid at dt seconds
+        t_new = np.arange(start_time, t[-1] + 1e-9, dt)
+        if t_new.size < 2:
+            return np.nan
+
+        # Linear interpolation (numpy only)
+        x_new = np.interp(t_new, t, x)
+        y_new = np.interp(t_new, t, y)
+
+        dx = np.diff(x_new)
+        dy = np.diff(y_new)
+        steps = np.hypot(dx, dy)
+
+        return float(np.nansum(steps))
+
+    except FileNotFoundError:
+        return np.nan
+    except Exception as e:
+        print(f"Error computing resampled distance from {plot_data_file_path}: {e}")
+        return np.nan
+
 def load_false_positives(plot_data_file_path, num_trees):
     """
     Carica plot_data.csv, estrae GT e lambdas finali e calcola:
@@ -83,7 +178,7 @@ def load_false_positives(plot_data_file_path, num_trees):
         Percentage of Correct Classifications on Classified Trees (%)
     Regola di decisione:
       - corretto: |gt - lambda| < 0.1
-      - sbagliato netto (considerato 'false positive' lato pratico): |gt - lambda| > 0.8
+      - sbagliato netto (considerato 'false positive'): |gt - lambda| > 0.8
       - non classificato (zona grigia): altrimenti
     """
     gt_ids = []
@@ -123,7 +218,7 @@ def load_false_positives(plot_data_file_path, num_trees):
             print(f"Warning: 'trees_gt_id,' line not found in {plot_data_file_path}")
             return np.nan
 
-        # Header timeseries
+        # Timeseries header
         header_line_index = -1
         header_parts = []
         for i, line_content in enumerate(lines):
@@ -136,7 +231,7 @@ def load_false_positives(plot_data_file_path, num_trees):
             print(f"Warning: Timeseries header (time,x,y,...) not found in {plot_data_file_path}")
             return np.nan
 
-        # Indici lambda
+        # Indices of lambda_i
         lambda_indices = []
         try:
             for i in range(num_trees):
@@ -146,7 +241,7 @@ def load_false_positives(plot_data_file_path, num_trees):
             print(f"Warning: Column {e} (one of lambda_i) not found in header of {plot_data_file_path}")
             return np.nan
 
-        # Ultima riga dati non vuota
+        # Last non-empty data row
         data_lines_content = [line for line in lines[header_line_index+1:] if line]
         if not data_lines_content:
             print(f"Warning: No data rows found after header in {plot_data_file_path}")
@@ -253,7 +348,7 @@ def plot_grouped_metrics(metrics_data, num_tests, algo_name="Algorithm"):
     group2_keys = ["Total Execution Time (s)", "Total Distance (m)"]
 
     def get_stats(keys):
-        medians, stds, mins, maxs = [], [], [], []
+        medians, stds, mins, maxs = [], [], []
         for key in keys:
             if key in metrics_data and metrics_data[key]:
                 median, std, min_val, max_val = compute_statistics(metrics_data[key])
@@ -478,7 +573,6 @@ def export_summary_table(all_metrics, test_counts, num_trees, output_path="__sum
         print("Cannot export summary table: No algorithm data.")
         return
 
-    # metriche presenti
     all_metric_keys = set()
     for metrics in all_metrics.values():
         all_metric_keys.update(metrics.keys())
@@ -489,7 +583,6 @@ def export_summary_table(all_metrics, test_counts, num_trees, output_path="__sum
         t_count = test_counts.get(algo, 0)
         for metric_key in sorted_metric_keys:
             values = metrics.get(metric_key, [])
-            # conversione numerica robusta
             arr = pd.to_numeric(pd.Series(values), errors='coerce').to_numpy()
             arr = arr[~np.isnan(arr)]
             mean_val = np.mean(arr) if arr.size > 0 else np.nan
@@ -510,14 +603,12 @@ def export_summary_table(all_metrics, test_counts, num_trees, output_path="__sum
     ])
     df.sort_values(by=["Metric", "Algorithm"], inplace=True)
 
-    # Salva e stampa: usa formatter function (niente float_format="%.4f" che causava l'errore)
     try:
         csv_path = output_path + str(num_trees) + ".csv"
         df.to_csv(csv_path, index=False)
         print(f"\n✅ Summary table saved: {csv_path}")
         print("\n--- Summary Statistics Table ---")
 
-        # formatters solo per colonne numeriche
         df_to_print = df.copy()
         num_cols = ["Mean", "Median", "Std Dev", "Min", "Max"]
         for c in num_cols:
@@ -527,76 +618,6 @@ def export_summary_table(all_metrics, test_counts, num_trees, output_path="__sum
         print(df_to_print.to_string(index=False, na_rep='N/A', formatters=formatters))
     except Exception as e:
         print(f"\n❌ Error saving summary table to {output_path+str(num_trees)+'.csv'}: {e}")
-
-def compute_distance_from_plot_data(plot_data_file_path):
-    """
-    Calcola la lunghezza del percorso (metri) dal CSV:
-      - riga 'trees_gt_id,...'
-      - header 'time,x,y,theta,...'
-      - righe dati
-    """
-    try:
-        with open(plot_data_file_path, "r") as f:
-            lines = [ln.strip() for ln in f if ln.strip()]
-
-        # Header timeseries
-        header_idx = -1
-        for i, ln in enumerate(lines):
-            if ln.startswith("time,x,y,theta"):
-                header_idx = i
-                break
-        if header_idx == -1:
-            print(f"Warning: header 'time,x,y,theta,...' non trovato in {plot_data_file_path}")
-            return np.nan
-
-        header = lines[header_idx].split(",")
-        try:
-            ix_t = header.index("time")
-            ix_x = header.index("x")
-            ix_y = header.index("y")
-        except ValueError:
-            print(f"Warning: colonne time/x/y non trovate nell'header di {plot_data_file_path}")
-            return np.nan
-
-        xs, ys = [], []
-        for ln in lines[header_idx + 1:]:
-            parts = ln.split(",")
-            if len(parts) <= max(ix_x, ix_y):
-                continue
-            try:
-                x = float(parts[ix_x])
-                y = float(parts[ix_y])
-            except ValueError:
-                continue
-            xs.append(x)
-            ys.append(y)
-
-        if len(xs) < 2:
-            return np.nan
-
-        xs = np.asarray(xs, dtype=float)
-        ys = np.asarray(ys, dtype=float)
-
-        dx = np.diff(xs)
-        dy = np.diff(ys)
-        step = np.hypot(dx, dy)
-
-        step = step[step > 0.0]
-        if step.size == 0:
-            return 0.0
-
-        if step.size >= 8:
-            p995 = np.nanpercentile(step, 99.5)
-            if np.isfinite(p995) and p995 > 0:
-                step = np.clip(step, 0, p995)
-
-        return float(np.nansum(step))
-
-    except FileNotFoundError:
-        return np.nan
-    except Exception as e:
-        print(f"Errore nel parsing di {plot_data_file_path}: {e}")
-        return np.nan
 
 def gather_metrics(base_dir, num_trees=100, has_gt_ids=True):
     run_folders = sorted(glob.glob(os.path.join(base_dir, "run_*")))
@@ -631,7 +652,7 @@ def gather_metrics(base_dir, num_trees=100, has_gt_ids=True):
         metrics_lists["Final Entropy"].append(perf.get("Final Entropy", np.nan))
         metrics_lists["Average NMPC Step Execution Time (s)"].append(perf.get("Average Waypoint-to-Waypoint Time (s)", np.nan))
 
-        # velocity
+        # Average velocity from *_velocity_commands.csv (median of sqrt(vx^2+vy^2))
         vel_files = glob.glob(os.path.join(run_folder_path, "*_velocity_commands.csv"))
         if not vel_files:
             metrics_lists["Average Velocity (m/s)"].append(np.nan)
@@ -640,14 +661,19 @@ def gather_metrics(base_dir, num_trees=100, has_gt_ids=True):
             avg_vel = load_average_velocity(vel_file)
             metrics_lists["Average Velocity (m/s)"].append(avg_vel)
 
-        # plot data (check esistenza prima di usarlo)
+        # Total Distance from *_plot_data.csv using uniform resample at DIST_SAMPLE_DT
         plot_data_files = glob.glob(os.path.join(run_folder_path, "*_plot_data.csv"))
         if plot_data_files:
-            computed_distance = compute_distance_from_plot_data(plot_data_files[0])
+            computed_distance = compute_distance_from_plot_data_resampled(
+                plot_data_files[0],
+                dt=DIST_SAMPLE_DT,
+                skip_first_seconds=DIST_SKIP_FIRST_SECONDS
+            )
             metrics_lists["Total Distance (m)"].append(computed_distance)
         else:
             metrics_lists["Total Distance (m)"].append(np.nan)
 
+        # FP metrics
         if not plot_data_files or not has_gt_ids:
             metrics_lists["False Positives (%)"].append(np.nan)
             metrics_lists["Not Detected (%)"].append(np.nan)
@@ -703,7 +729,7 @@ def run_batch_analysis(base_dirs_dict, num_trees):
     print("\n--- Batch Analysis Complete ---")
 
 if __name__ == "__main__":
-    num_trees = 25
+    num_trees = 100
     base_dirs_to_analyze = {
         f'mower_{num_trees}_slow': {"path": f'batch_test_{num_trees}trees_mower_slow_gt', "has_gt_ids": True},
         f'mower_{num_trees}'     : {"path": f'batch_test_{num_trees}trees_mower_gt', "has_gt_ids": True},

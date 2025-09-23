@@ -32,53 +32,37 @@ from nmpc_ros_package.ros_com_lib.sensors import create_path_from_mpc_prediction
 
 
 class MultiLayerPerceptron(torch.nn.Module):
-    input_layer: torch.nn.Linear
-    hidden_layer: torch.nn.ModuleList
-    out_layer: torch.nn.Linear
-
-    def __init__(self, input_dim, hidden_size=64, hidden_layers=3):
+    def __init__( self, input_dim, hidden_size=64, hidden_layers=3, output_dim=2, threshold=8.0, gate_slope=10.0,):
         super().__init__()
         in_features = input_dim if input_dim != 3 else input_dim + 1
         self.input_layer = torch.nn.Linear(in_features, hidden_size)
-        self.hidden_layer = torch.nn.ModuleList(
+        self.hidden_layers = torch.nn.ModuleList(
             [torch.nn.Linear(hidden_size, hidden_size) for _ in range(hidden_layers)]
         )
-        self.out_layer = torch.nn.Linear(hidden_size, 1)
+        self.out_layer = torch.nn.Linear(hidden_size, output_dim)
+
+        # register as buffers so they carry device+dtype+wrapper keys
+        self.register_buffer('threshold', torch.tensor(threshold))
+        self.register_buffer('gate_slope', torch.tensor(gate_slope))
 
     def forward(self, x):
 
         if x.shape[-1] == 3:
-            sin_cos = torch.cat([torch.sin(x[..., -1:]), torch.cos(x[..., -1:])], dim=-1)
+            sin_cos = torch.cat([torch.sin(x[..., -1:]),
+                                 torch.cos(x[..., -1:])], dim=-1)
             x = torch.cat([x[..., :-1], sin_cos], dim=-1)
-        x = self.input_layer(x)
-        for layer in self.hidden_layer:
-            x = torch.tanh(layer(x))
-        x = self.out_layer(x)
-        return x
 
-class RipeMLP(torch.nn.Module):
-    def __init__(self, base_model: torch.nn.Module):
-        super().__init__()
-        self.base = base_model
+        raw_2d = x[..., :2]
+        norm2d = raw_2d.norm(dim=-1)
+        gate = torch.sigmoid(self.gate_slope * (self.threshold - norm2d))
 
-    def forward(self, x):
-        # base returns shape [batch, 1]
-        y = self.base(x)            # original output
-        y2 = 1.0 - y                # its “negate”
-        return torch.cat([y, y2], dim=-1)  # shape [batch, 2]
+        h = torch.tanh(self.input_layer(x))
+        for layer in self.hidden_layers:
+            h = torch.tanh(layer(h))
+        logits = self.out_layer(h)
 
-
-class RawMLP(torch.nn.Module):
-    def __init__(self, base_model: torch.nn.Module):
-        super().__init__()
-        self.base = base_model
-
-    def forward(self, x):
-        # base returns shape [batch, 1]
-        y = self.base(x)            # original output
-        y2 = 1.0 - y                # its “negate”
-        return torch.cat([y2, y], dim=-1)  # shape [batch, 2]
-
+        gated_logits = logits * gate.unsqueeze(-1)
+        return F.softmax(gated_logits, dim=-1)
 
 class NeuralMPC:
     def __init__(self, run_dir=None, initial_randomic=False):
@@ -104,11 +88,10 @@ class NeuralMPC:
             model = MultiLayerPerceptron(input_dim=self.nn_input_dim,
                                         hidden_size=self.hidden_size,
                                         hidden_layers=self.hidden_layers)
-            model_load_path = self.get_latest_best_model()
+            model_load_path = self.get_latest_best_model(label)
             model.load_state_dict(torch.load(model_load_path, map_location=torch.device('cuda')))
             model.eval()
-            wrapped = RipeMLP(model) if label == 'ripe' else RawMLP(model)
-            g_nn = l4c.L4CasADi(wrapped, 
+            g_nn = l4c.L4CasADi(model, 
                                 batched=True, 
                                 device='cuda', 
                                 name=label)
@@ -306,7 +289,8 @@ class NeuralMPC:
         """
         unnorm = prior * likelihood
         norm = ca.repmat(ca.sum2(unnorm), 1, 2)
-        return  unnorm / norm 
+        posterior = unnorm / norm 
+        return posterior
 
     @staticmethod
     def entropy_f(num_targets):
@@ -384,6 +368,7 @@ class NeuralMPC:
         R_theta = 1e-2
         attraction = 0
         safe_distance = 1.0
+        entropy_w = 40
         obj = 0
 
         # Initial condition
@@ -444,7 +429,7 @@ class NeuralMPC:
 
         for i in range(1, steps+1):
             entropy_future = self.entropy_target(lambda_evol[i])
-            entropy_obj += ca.exp(-2*i)*ca.logsumexp(-40*entropy_future)
+            entropy_obj += ca.exp(-2*i)*ca.logsumexp(-entropy_w*entropy_future)
 
 
         sq_dist_to_targets = ca.sum1((X0[:2] - TARGET_TREES_param)**2)

@@ -3,5 +3,6 @@
         "./ros/src/nmpc_ros/src",
         "./ros/src/nmpc_ros/src",
         "./ros/src/yolov7-ros/src"
-    ]
+    ],
+    "cmake.sourceDirectory": "/home/pantheon/drea/neural_mpc/ros/build/catkin_tools_prebuild"
 }

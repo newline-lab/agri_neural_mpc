@@ -9,13 +9,14 @@ from visualization_msgs.msg import Marker, MarkerArray
 from image_geometry import PinholeCameraModel
 from scipy.spatial import cKDTree
 from nmpc_ros.srv import GetTreesPoses
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 import tf
 import tf.transformations as tf_trans
 import message_filters
 
-def weight_value(n_elements, mean_score, midpoint=5, steepness=10.):
-    return np.ceil(100 * (mean_score - 0.5) * (0.5 + 0.5 * np.tanh(steepness * (n_elements - midpoint)))) / 100
+def weight_value(n_elements, mean_score, midpoint=5., steepness=10.):
+    val = (mean_score - 0.5) * (0.5 + 0.5*np.tanh(steepness*(n_elements - midpoint)))
+    return np.round(val, 2)
 
 class DataAssociationNode:
     def __init__(self):
@@ -98,18 +99,25 @@ class DataAssociationNode:
                 rospy.logerr(e)
                 continue
         return np.array(map_fruits_positions)
+    
+
     def synchronized_callback(self, detection_msg, depth_image_msg):
         if self.camera_matrix is None or self.tree_poses is None:
             return
         
         try:
-            self.depth_image = self.bridge.compressed_imgmsg_to_cv2(depth_image_msg, desired_encoding="passthrough")[:, :, 0]
+            # Extract the depth channel
+            self.depth_image = self.bridge.compressed_imgmsg_to_cv2(
+                depth_image_msg,
+                desired_encoding="passthrough"
+            )[:, :, 0]
         except CvBridgeError as e:
             rospy.logerr(e)
             return
 
         fruit_positions, fruit_scores, fruit_classes = [], [], []
 
+        # Project detections into 3D
         for detection in detection_msg.detections:
             bbox = detection.bbox
             xmin = int(bbox.center.x - bbox.size_x / 2)
@@ -120,47 +128,86 @@ class DataAssociationNode:
             xmin, xmax = max(0, xmin), min(self.depth_image.shape[1], xmax)
             ymin, ymax = max(0, ymin), min(self.depth_image.shape[0], ymax)
 
-            depth_roi = self.depth_image[int(bbox.center.y), int(bbox.center.x)]
+            # Sample the center pixel for depth
+            cx, cy = int(bbox.center.x), int(bbox.center.y)
+            depth_roi = self.depth_image[cy, cx]
             non_zero_depths = depth_roi[depth_roi > 11]
             if len(non_zero_depths) == 0:
                 continue
 
             median_depth = np.median(non_zero_depths)
-            center_x, center_y = int(bbox.center.x), int(bbox.center.y)
 
-            XYZ = np.array(self.cam_model.projectPixelTo3dRay((center_x, center_y)))
-            XYZ *= self.uint8_to_distance(median_depth, 0.05, 20)
+            
+            ray = np.array(self.cam_model.projectPixelTo3dRay((cx, cy)))
+            distance = self.uint8_to_distance(median_depth, 0.05, 20)
+            XYZ = ray * distance
 
             fruit_positions.append(XYZ)
             fruit_scores.append(detection.results[0].score)
-            fruit_classes.append("ripe" if detection.results[0].id == 2 else "raw")  # Assuming ID 1 is ripe, others are raw
-        
+            fruit_classes.append(
+                "ripe" if detection.results[0].id == 2 else "raw"
+            )
+
         fruit_positions = np.array(fruit_positions)
 
-        # Transform fruit positions from camera frame to map frame
-        map_fruits_positions = self.transform_fruit_positions(fruit_positions, detection_msg.header)
+        # Transform to map frame and associate fruits to trees
+        map_fruits_positions = self.transform_fruit_positions(
+            fruit_positions, detection_msg.header
+        )
+        associated_fruits = self.associate_fruits_to_trees(
+            map_fruits_positions, fruit_classes, fruit_scores
+        )
 
-        associated_fruits = self.associate_fruits_to_trees(map_fruits_positions, fruit_classes, fruit_scores)
+        # Get drone position for distance-based scoring
         try:
-            (drone_trans, drone_rot) = self.tf_listener.lookupTransform('map', 'drone_base_link', rospy.Time())
+            (drone_trans, drone_rot) = self.tf_listener.lookupTransform(
+                'map', 'drone_base_link', rospy.Time()
+            )
             drone_x, drone_y = drone_trans[0], drone_trans[1]
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException) as e:
             rospy.logwarn("Could not get drone position, skipping distance check.")
             drone_x, drone_y = None, None
+
+        # Initialize base scores for each tree
         tree_scores = np.ones(len(self.tree_poses)) * 0.5
+
+        # Update tree scores
         for i, fruits in associated_fruits.items():
-            ripe_scores = fruits["ripe"]
-            raw_scores = fruits["raw"]
+            ripe_scores = fruits.get("ripe", [])
+            raw_scores  = fruits.get("raw", [])
             tree_x, tree_y = self.tree_poses[i]
-            distance = np.sqrt((drone_x - tree_x)**2 + (drone_y - tree_y)**2)
-            if distance < 8:
-                ripe_value = weight_value(len(ripe_scores), np.mean(ripe_scores) if ripe_scores else 0)
-                raw_value = weight_value(len(raw_scores), np.mean(raw_scores) if raw_scores else 0)
-                tree_scores[i] = ripe_value - raw_value + 0.5
-            
-        scores_msg = Float32MultiArray()
-        scores_msg.data = tree_scores.tolist()
-        self.scores_pub.publish(scores_msg)
+
+            if drone_x is not None:
+                dist = np.hypot(drone_x - tree_x, drone_y - tree_y)
+                if dist < 8:
+                    ripe_value = weight_value(
+                        len(ripe_scores), np.mean(ripe_scores) if ripe_scores else 0
+                    )
+                    raw_value = weight_value(
+                        len(raw_scores), np.mean(raw_scores) if raw_scores else 0
+                    )
+                    tree_scores[i] = ripe_value - raw_value + 0.5
+
+        # Build a 2-column array: [score, -score] per tree
+        scores_with_neg = np.stack([tree_scores, 1-tree_scores], axis=1)  # shape (N,2)
+
+        # Publish as a 2D multiarray
+        msg = Float32MultiArray()
+        dim0 = MultiArrayDimension(
+            label="tree",
+            size=scores_with_neg.shape[0],
+            stride=scores_with_neg.shape[0] * scores_with_neg.shape[1]
+        )
+        dim1 = MultiArrayDimension(
+            label="type",
+            size=2,
+            stride=scores_with_neg.shape[1]
+        )
+        msg.layout.dim = [dim0, dim1]
+        msg.data = scores_with_neg.flatten().tolist()
+
+        self.scores_pub.publish(msg)
+
         
         if self.publish_visualization:
             markers = MarkerArray()

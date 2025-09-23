@@ -31,25 +31,21 @@ class PIDController:
         self.prev_error = error
         return output
 
-
 class Logger:
     def __init__(self, trajectory_type, run_folder="baselines", filename='performance_metrics.csv'):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.timestamp = time.strftime("%Y%m%d_%H%M%S")  # Current timestamp
-        # Create a filename that includes trajectory type and timestamp
+        self.timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.filename = os.path.join(os.path.join(script_dir, run_folder),
                                      f"{trajectory_type}_{self.timestamp}_{filename}")
 
         self.csv_file = open(self.filename, 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
-        # Write header with additional columns for Position and Entropy Reduction.
         self.csv_writer.writerow(['Waypoint', 'Position', 'Execution Time (s)',
                                   'Cumulative Distance (m)', 'Waypoint-to-Waypoint Time (s)', 'Entropy Reduction'])
         self.performance_data = []
         self.start_time = None
         self.total_distance = 0
 
-        # Open an additional CSV file to log injected velocity commands.
         self.velocity_filename = os.path.join(os.path.join(script_dir,run_folder),
                                               f"{trajectory_type}_{self.timestamp}_velocity_commands.csv")
         self.velocity_csv_file = open(self.velocity_filename, 'w', newline='')
@@ -82,7 +78,6 @@ class Logger:
 
     def finalize_performance_metrics(self, final_entropy=None, final_bayes=None):
         total_time = time.time() - self.start_time if self.start_time is not None else 0
-        # Compute average waypoint-to-waypoint time if available.
         wp_times = [data['Waypoint-to-Waypoint Time'] for data in self.performance_data]
         avg_wp_time = np.mean(wp_times) if wp_times else 0
 
@@ -103,11 +98,18 @@ class Logger:
 
 
 class TrajectoryGenerator:
-    def __init__(self, trajectory_type, run_folder="baselines", random_initial_state=True):
+    def __init__(self, trajectory_type, run_folder="baselines", random_initial_state=True, seed=1):
         self.run_folder = run_folder
-        # Get trajectory mode and initialize Logger only once.
         self.trajectory_type = trajectory_type
+        self.seed = seed
+        self._init_rng(seed)
         self.logger = Logger(trajectory_type, run_folder)
+
+
+        self.alpha_cmd = 0.2                 # 0=no filter, 1=no history; 0.1–0.3 is mild smoothing
+        self.prev_cmd = np.zeros(3)          # [vx, vy, vyaw] previous filtered command
+        self.max_lin_accel = 0.75            # m/s^2  (tune 0.5–1.0)
+        self.max_yaw_accel = np.pi/2         # rad/s^2
 
         rospy.init_node("baseline_node", anonymous=True, log_level=rospy.DEBUG)
         
@@ -120,15 +122,15 @@ class TrajectoryGenerator:
 
         # New history lists for storing poses and bayesian (lambda) values
         self.pose_history = []      # Each entry: [x, y, theta]
-        self.lambda_history = []    # Each entry: copy of lambda_values at that step
+        self.lambda_history = []
         self.entropy_history = []
         self.time_history = []
         self.latest_trees_scores = None
         self.is_mower =( self.trajectory_type == 'mower')
         # Initialize PID controllers.
-        self.pid_controller_x = PIDController(kp=3.0 if self.is_mower else 7.0, kd=1)
-        self.pid_controller_y = PIDController(kp=3.0 if self.is_mower else 7.0, kd=1)
-        self.pid_controller_yaw = PIDController(kp=3.0 if self.is_mower else .25, kd=0.1)
+        self.pid_controller_x = PIDController(kp=1.0 if self.is_mower else 7.0, kd=1)
+        self.pid_controller_y = PIDController(kp=1.0 if self.is_mower else 7.0, kd=1)
+        self.pid_controller_yaw = PIDController(kp=1.0 if self.is_mower else .25, kd=0.1)
 
         self.idx = None
 
@@ -138,11 +140,12 @@ class TrajectoryGenerator:
         self.tree_positions, self.trees_gt_id = self.get_trees_poses_and_types()
         self.num_total_trees = self.tree_positions.shape[0]
         lb, ub = self.get_domain(self.tree_positions)
-        initial_state = self.generate_random_initial_state(lb, ub, margin=1.75)
-        print(f"Initial State: {initial_state}")
-        # Publish the initial random position.
+        init_pose = self.generate_random_initial_state(lb, ub, margin=1.75, seed=self.seed)
+        print(f"Initial State: {init_pose.ravel()}")
+
         if random_initial_state:
-            current_state = self.generate_random_initial_state(lb, ub, margin=1.5)
+            # use the same seeded pose if you want, or sample a different (but reproducible) one:
+            current_state = self.generate_random_initial_state(lb, ub, margin=1.0, seed=self.seed)
             quaternion = tf.transformations.quaternion_from_euler(0, 0, float(current_state[2]))
             cmd_pose_msg = Pose()
             cmd_pose_msg.position = Point(x=float(current_state[0]), y=float(current_state[1]), z=0.0)
@@ -156,10 +159,10 @@ class TrajectoryGenerator:
         self.lambda_values = np.full(len(self.tree_positions), 0.5)  # Initialize lambda
 
 
-        tree_markers_msg = create_tree_markers(self.tree_positions, self.lambda_values.flatten())
-        self.tree_markers_pub.publish(tree_markers_msg)
+        #tree_markers_msg = create_tree_markers(self.tree_positions, self.lambda_values.flatten())
+        #self.tree_markers_pub.publish(tree_markers_msg)
 
-        self.max_velocity = 0.45 if self.is_mower else 3.0         # Maximum velocity of the robot
+        self.max_velocity = 1.5         # Maximum velocity of the robot
         self.max_yaw_velocity = np.pi/4      # Maximum yaw velocity (rad/s)
 
         self.dt = 0.1
@@ -167,7 +170,6 @@ class TrajectoryGenerator:
 
         # Maximum time allowed for observation around a tree (in seconds)
         self.max_observe_time = 30.0
-        self.rate = rospy.Rate(int(1 / self.dt))
         self.measurement_timer = rospy.Timer(rospy.Duration(0.4), self.measurement_callback)
 
     # ---------------------------
@@ -221,7 +223,7 @@ class TrajectoryGenerator:
         """
         Callback for tree scores.
         """
-        scores = np.array(msg.data).reshape(-1, 1)
+        scores = np.array(msg.data).reshape(-1, 2)[:,0]
         self.latest_trees_scores = scores
 
     def robot_state_update_thread(self):
@@ -244,64 +246,38 @@ class TrajectoryGenerator:
             rospy.logwarn("Failed to get transform: %s", e)
             return None
 
-
-    def generate_random_initial_state(self, lb, ub, margin=1.25):
+    def _init_rng(self, seed=None):
+        self.rng = np.random.default_rng(seed)
+    
+    def generate_random_initial_state(self, lb, ub, margin=1.25, seed=None):
         """
-        Generate a random initial state [x, y, theta].
-        - If mode is 'linear', start outside the field bounds.
-        - If mode is 'mower', start from one of the four field corners.
+        Class version of the initial-pose sampler using a seeded RNG.
+        If seed is None, uses the object's RNG; otherwise, uses a local RNG for this call.
+        Returns shape (3,1) to match your original.
         """
-        threshold = 1.5  # Extra margin
-        direction_map = {'N': np.pi/2, 'E': 0, 'S': -np.pi/2, 'W': np.pi}
-        orientations = ['N', 'S', 'E', 'W']
+        rng = self.rng if seed is None else np.random.default_rng(seed)
+        is_mower = (self.trajectory_type == 'mower')
+        direction_map = {'E': 0.0, 'S': -np.pi/2, 'W': np.pi}
+        orientations = ['S']
+        threshold = 1.5
 
         while True:
-            if self.trajectory_type == "linear":
-                # Generate x outside the x domain
-                if np.random.rand() < 0.5:
-                    x = np.random.uniform(lb[0] - threshold, lb[0])
-                else:
-                    x = np.random.uniform(ub[0], ub[0] + threshold)
-
-                # Generate y outside the y domain
-                if np.random.rand() < 0.5:
-                    y = np.random.uniform(lb[1] - threshold, lb[1])
-                else:
-                    y = np.random.uniform(ub[1], ub[1] + threshold)
-
-                theta = np.random.uniform(-np.pi, np.pi)
-
-            elif self.trajectory_type == "mower":
-                # Randomly pick one of the 4 vertices
-                vertices = [
-                    (lb[0]-1.5, lb[1]-1.5),  # bottom-left
-                    (lb[0]-1.5, ub[1]+1.5),  # top-left
-                    (ub[0]-1.5, lb[1]-1.5),  # bottom-right
-                    (ub[0]-1.5, ub[1]+1.5)   # top-right
-                ]
-                x, y = vertices[np.random.randint(0, 4)]
-
-                # Random heading from cardinal directions
-                orientation_choice = np.random.choice(orientations)
-                theta = direction_map[orientation_choice]
-
-                print(f"Selected start at vertex: ({x:.2f}, {y:.2f}) with orientation {orientation_choice}")
-
-            else:
-                # Default fallback: inside field, away from trees
-                x = np.random.uniform(lb[0], ub[0])
-                y = np.random.uniform(lb[1], ub[1])
-                theta = np.random.uniform(-np.pi, np.pi)
-
-            # Ensure initial position is not too close to trees
-            valid = True
-            for tree in self.tree_positions:
+            vertices = [
+                (lb[0]-1.5, lb[1]-1.5),
+                (lb[0]-1.5, ub[1]+1.5),
+                (ub[0]+1.5, lb[1]-1.5),
+                (ub[0]-1.5, ub[1]+1.5),
+            ]
+            x, y = vertices[rng.integers(0, 4)]
+            theta = direction_map[rng.choice(orientations)]
+            # enforce margin from trees
+            ok = True
+            for tree in np.asarray(self.tree_positions):
                 if np.linalg.norm(np.array([x, y]) - tree) < margin:
-                    valid = False
+                    ok = False
                     break
-
-            if valid:
-                return np.array([x, y, theta]).reshape(-1, 1)
+            if ok:
+                return np.array([x, y, theta], dtype=float).reshape(-1, 1)
 
     @staticmethod
     def get_domain(tree_positions):
@@ -328,8 +304,8 @@ class TrajectoryGenerator:
                 self.circle_tree_event.clear()
 
         current_entropy = self.calculate_entropy(self.lambda_values)
-        tree_markers_msg = create_tree_markers(self.tree_positions, self.lambda_values.flatten())
-        self.tree_markers_pub.publish(tree_markers_msg)
+        #tree_markers_msg = create_tree_markers(self.tree_positions, self.lambda_values.flatten())
+        #self.tree_markers_pub.publish(tree_markers_msg)
 
     def calculate_entropy(self, lambda_values):
         """Simple entropy calculation based on lambda values."""
@@ -427,7 +403,31 @@ class TrajectoryGenerator:
             x_output = np.clip(x_output, -self.max_velocity, self.max_velocity)
             y_output = np.clip(y_output, -self.max_velocity, self.max_velocity)
             yaw_output = np.clip(yaw_output, -self.max_yaw_velocity, self.max_yaw_velocity)
+            
+            # --- Low-pass filter the velocity command (EMA) ---
+            raw_cmd = np.array([x_output, y_output, yaw_output], dtype=float)
+            filt_cmd = self.alpha_cmd * raw_cmd + (1.0 - self.alpha_cmd) * self.prev_cmd
 
+            # --- Acceleration limiting (per-axis slew rate) ---
+            max_dv = self.max_lin_accel * self.dt
+            max_dw = self.max_yaw_accel * self.dt
+
+            dv = filt_cmd[:2] - self.prev_cmd[:2]
+            dw = filt_cmd[2] - self.prev_cmd[2]
+
+            # clip deltas
+            dv = np.clip(dv, -max_dv, max_dv)
+            dw = np.clip(dw, -max_dw, max_dw)
+
+            cmd = np.empty_like(filt_cmd)
+            cmd[:2] = self.prev_cmd[:2] + dv
+            cmd[2]  = self.prev_cmd[2]  + dw
+
+            self.prev_cmd = cmd  # persist
+
+            # use smoothed/limited command for logging & integration
+            x_output, y_output, yaw_output = cmd.tolist()
+            
             # Log the injected velocities.
             self.logger.log_velocity(x_output, y_output, yaw_output, tag="move_to_waypoint")
     
@@ -512,86 +512,69 @@ class TrajectoryGenerator:
         denominator = numerator + (1 - lambda_prev) * (1 - z)
         return numerator / denominator
 
-    def generate_mower_path_mower(self, offset=2.0, spacing=4.0, heading_direction='O', axis='x'):
+    def generate_mower_path_mower(self, offset=2.0, spacing=4.0, heading_direction='E', axis=None, seed=None):
         """
-        Generate a mower path that includes external rows outside the tree grid.
-
-        The path now includes external rows to the left and right of the tree grid,
-        along with the existing rows between the trees.        """
-        if len(self.tree_positions) == 0:
+        Reproducible mower (boustrophedon) path.
+        If seed is provided, uses a local RNG; otherwise uses self.rng.
+        """
+        rng = self.rng if seed is None else np.random.default_rng(seed)
+        if self.tree_positions.size == 0:
             return []
 
-        # Determine field boundaries based on tree positions
-        x_min = np.min(self.tree_positions[:, 0]) - offset 
-        x_max = np.max(self.tree_positions[:, 0]) + offset
-        y_min = np.min(self.tree_positions[:, 1]) - offset
-        y_max = np.max(self.tree_positions[:, 1]) + offset
-
-        # Use initial position and orientation
-        drone_x,drone_y,_ = self.robot_state_update_thread()
-
-
-        def find_nearest_vertex(drone_x, drone_y, x_min_inner, x_max_inner, y_min_inner, y_max_inner):
-            # Define the four vertices of the inner field
-            vertices = [
-                (x_min_inner, y_min_inner),  # Bottom-left
-                (x_min_inner, y_max_inner),  # Top-left
-                (x_max_inner, y_min_inner),  # Bottom-right
-                (x_max_inner, y_max_inner)   # Top-right
-            ]
-            
-            min_distance_sq = float('inf')
-            nearest_vertex = None
-            
-            for vertex in vertices:
-                dx = drone_x - vertex[0]
-                dy = drone_y - vertex[1]
-                distance_sq = dx ** 2 + dy ** 2
-                # Update if this vertex is closer
-                if distance_sq < min_distance_sq:
-                    min_distance_sq = distance_sq
-                    nearest_vertex = vertex
-            
-            return nearest_vertex
-        # Find the nearest vertex to the drone's position
-        nearest_vertex = find_nearest_vertex(drone_x, drone_y, x_min, x_max, y_min, y_max)
-        x_start, y_start = nearest_vertex
-
-        # Determine direction for x and y based on the nearest vertex
-        x_step = spacing if x_start == x_min else -spacing
-        y_step = spacing if y_start == y_min else -spacing
-
-        # Generate x coordinates in the correct order
-        if x_step > 0:
-            x_coords = np.arange(x_min , x_max + x_step , x_step)
+        # map heading
+        dir_map = {'N': np.pi/2, 'E': 0.0, 'S': -np.pi/2, 'W': np.pi, 'O': np.pi}
+        if heading_direction is None:
+            heading = dir_map[rng.choice(list(dir_map.keys()))]
+        elif isinstance(heading_direction, str):
+            heading = dir_map.get(heading_direction.upper(), 0.0)
         else:
-            x_coords = np.arange(x_max , x_min + x_step , x_step)
+            heading = float(heading_direction)
 
-        # Generate y coordinates in the correct order
-        if y_step > 0:
-            y_coords = np.arange(y_min , y_max + y_step, y_step)
-        else:
-            y_coords = np.arange(y_max , y_min + y_step, y_step)
+        # bounds
+        x_min = float(np.min(self.tree_positions[:, 0]) - offset)
+        x_max = float(np.max(self.tree_positions[:, 0]) + offset)
+        y_min = float(np.min(self.tree_positions[:, 1]) - offset)
+        y_max = float(np.max(self.tree_positions[:, 1]) + offset)
 
+        # inclusive coords helper
+        def inclusive_coords(lo, hi, step):
+            n = max(1, int(np.floor((hi - lo) / step + 1e-9)))
+            xs = lo + step * np.arange(n + 1)
+            if xs[-1] < hi - 1e-9:
+                xs = np.append(xs, hi)
+            else:
+                xs[-1] = hi
+            return xs
 
-        # Create grid waypoints
+        xs_inc = inclusive_coords(x_min, x_max, spacing)
+        ys_inc = inclusive_coords(y_min, y_max, spacing)
+
+        # choose axis
+        if axis not in ('x', 'y'):
+            axis = rng.choice(['x', 'y'])
+
+        # nearest corner to current pose
+        drone_x, drone_y, _ = self.robot_state_update_thread()
+        corners = [(x_min, y_min), (x_min, y_max), (x_max, y_min), (x_max, y_max)]
+        x_start, y_start = min(corners, key=lambda c: (drone_x - c[0])**2 + (drone_y - c[1])**2)
+
+        xs = xs_inc if x_start == x_min else xs_inc[::-1]
+        ys = ys_inc if y_start == y_min else ys_inc[::-1]
 
         waypoints = []
-        direction_map = {'N': np.pi/2, 'E': 0, 'S': -np.pi/2, 'W': np.pi}
-        fixed_heading = np.random.choice(list(direction_map.values()))
-        axis = np.random.choice(['x', 'y'])
-
         if axis == 'x':
-            for y in y_coords:
-                for x in x_coords:
-                    waypoints.append((x, y, fixed_heading))
-                x_coords = x_coords[::-1]       
+            for i, y in enumerate(ys):
+                row = xs if (i % 2 == 0) else xs[::-1]
+                for x in row:
+                    waypoints.append((float(x), float(y), float(heading)))
         else:
-            for x in x_coords:
-                for y in y_coords:
-                    waypoints.append((x, y, fixed_heading))
-                y_coords = y_coords[::-1]       
-        print( fixed_heading , axis)
+            for i, x in enumerate(xs):
+                col = ys if (i % 2 == 0) else ys[::-1]
+                for y in col:
+                    waypoints.append((float(x), float(y), float(heading)))
+
+        rospy.loginfo(f"[mower] seed={seed}, axis={axis}, heading={heading:.3f} rad, "
+                    f"x[{xs[0]:.2f}..{xs[-1]:.2f}] y[{ys[0]:.2f}..{ys[-1]:.2f}], {len(waypoints)} wpts")
         return waypoints
 
 
@@ -607,10 +590,20 @@ class TrajectoryGenerator:
 
         # Generate the simple mower path.
         # You can adjust offset, spacing, and heading_direction as needed.
-        path = self.generate_mower_path_mower(offset=2.0, spacing=4.0, heading_direction='E', axis='y')
+        #E,y
+        path = self.generate_mower_path_mower(offset=2.0, spacing=4.0, heading_direction='S')
         
         #self.plot_path(path, self.tree_positions)
-
+        cmd_pose = np.array(path[0]).reshape(-1, 1)
+        # Build and publish the cmd_pose message.
+        quaternion = tf.transformations.quaternion_from_euler(0, 0, float(cmd_pose[2]))
+        cmd_pose_msg = Pose()
+        cmd_pose_msg.position = Point(x=float(cmd_pose[0]), y=float(cmd_pose[1]), z=0.0)
+        cmd_pose_msg.orientation = Quaternion(x=quaternion[0],
+                                                y=quaternion[1],
+                                                z=quaternion[2],
+                                                w=quaternion[3])
+        self.cmd_pose_pub.publish(cmd_pose_msg)
         total_time = 0
         for i in range(1, len(path)):
             current_point = np.array(path[i][:2])
@@ -863,12 +856,12 @@ class TrajectoryGenerator:
 if __name__ == '__main__':
     try:
         # Initialize and run the trajectory generator
-        modes = ['linear']
+        modes = ['greedy']
         for mode in modes:
             for test_num in range(0, 1):
                 import re
                 # Define base folder
-                base_test_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"batch_test_plot_traj_{mode}_gt")
+                base_test_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_plotting_same_starting_point")
                 os.makedirs(base_test_folder, exist_ok=True)
 
                 # Find the next test number
@@ -879,7 +872,7 @@ if __name__ == '__main__':
                 next_test_num = max(existing_runs, default=0) + 1
 
                 # Create run folder
-                run_folder = os.path.join(base_test_folder, f"run_{next_test_num}")
+                run_folder = os.path.join(base_test_folder, f"run_{next_test_num}_{mode}")
                 os.makedirs(run_folder, exist_ok=True)
 
                 print(f"================== Starting Test Run {next_test_num} ==================")

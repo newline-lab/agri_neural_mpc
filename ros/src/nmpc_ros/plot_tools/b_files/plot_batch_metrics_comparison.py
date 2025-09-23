@@ -378,7 +378,7 @@ if __name__ == "__main__":
     base_dirs_to_analyze = {
         'neural mpc 100 elements': 'test_hz_nmpc',
         'neural mpc 10 elements': 'test_hz_10_nmpc',
-        'neural mpc 256 elemnts': 'test_hz_625_nmpc',
-        'neural mpc 256 elemnts with 10 elements': 'test_hz_625_10_nmpc'
+        'neural mpc 625 elemnts': 'test_hz_625_nmpc',
+        'neural mpc 625 elemnts with 10 elements': 'test_hz_625_10_nmpc'
     }
     run_batch_analysis(base_dirs_to_analyze)

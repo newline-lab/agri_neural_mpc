@@ -203,6 +203,67 @@ def load_false_positives(plot_data_file_path, num_trees):
         return np.nan
 
 
+def gather_metrics(base_dir, num_trees=100):
+    """ Searches subdirs, loads metrics/velocity/FPs, returns dict & test count. """
+    run_folders = sorted(glob.glob(os.path.join(base_dir, "run_*")))
+    if not run_folders:
+        print(f"Warning: No 'run_*' directories found in {base_dir}")
+
+    metrics_lists = {
+        "Total Execution Time (s)": [],
+        "Final Entropy": [],
+        "Total Distance (m)": [],
+        "Average Velocity (m/s)": [],
+        "Average NMPC Step Execution Time (s)": [],
+        "False Positives (%)": [],
+        "Not Detected (%)": [],
+        "Percentage of Classified Trees (%)": [],
+        "Percentage of Correct Classifications on Classified Trees (%)": []
+    }
+
+    tests_found_metrics = 0
+    for run_idx, run_folder_path in enumerate(run_folders):
+        perf_files = glob.glob(os.path.join(run_folder_path, "*performance_metrics.csv"))
+        if not perf_files:
+            continue
+
+        perf_file = perf_files[0]
+        perf = load_performance_metrics(perf_file)
+        if perf is None:
+             continue
+
+        tests_found_metrics += 1
+        metrics_lists["Total Execution Time (s)"].append(perf.get("Total Execution Time (s)", np.nan))
+        metrics_lists["Final Entropy"].append(perf.get("Final Entropy", np.nan))
+        metrics_lists["Total Distance (m)"].append(perf.get("Total Distance (m)", np.nan))
+        metrics_lists["Average NMPC Step Execution Time (s)"].append(perf.get("Average Waypoint-to-Waypoint Time (s)", np.nan))
+
+        vel_files = glob.glob(os.path.join(run_folder_path, "*_velocity_commands.csv"))
+        if not vel_files:
+            metrics_lists["Average Velocity (m/s)"].append(np.nan)
+        else:
+             vel_file = vel_files[0]
+             avg_vel = load_average_velocity(vel_file)
+             metrics_lists["Average Velocity (m/s)"].append(avg_vel)
+
+        # --- Load False Positives (%) ---
+        plot_data_files = glob.glob(os.path.join(run_folder_path, "*_plot_data.csv"))
+        if not plot_data_files:
+            metrics_lists["False Positives (%)"].append(np.nan)
+            metrics_lists["Not Detected (%)"].append(np.nan)
+        else:
+            plot_data_file = plot_data_files[0] 
+            fp, notdet, perc_class, perc_corr = load_false_positives(plot_data_file, num_trees)
+            metrics_lists["False Positives (%)"].append(fp)
+            metrics_lists["Not Detected (%)"].append(notdet)
+            metrics_lists["Percentage of Classified Trees (%)"].append(perc_class)
+            metrics_lists["Percentage of Correct Classifications on Classified Trees (%)"].append(perc_corr)
+
+    if tests_found_metrics > 0 :
+        print(f"Processed {base_dir}: Found metrics in {tests_found_metrics}/{len(run_folders)} runs.")
+    return metrics_lists, tests_found_metrics
+
+
 def compute_statistics(values):
     """ Removes NaNs/outliers (IQR), computes median, std, min, max. """
     arr = np.array(values, dtype=float)
@@ -351,6 +412,37 @@ def run_single_analysis(algo_name, base_dir):
     else:
         print(f"Skipping plot for {algo_name}: No valid test data.")
     return metrics_data, num_tests
+
+def run_batch_analysis(base_dirs_dict, num_trees):
+    """ Analyzes multiple algorithms, generates comparison plots, exports summary. """
+    all_metrics = {}
+    test_counts = {}
+    
+    print("\n--- Starting Batch Analysis ---")
+    for algo_name, base_dir in base_dirs_dict.items():
+        base_dir = os.path.join("/home/pantheon/drea/neural_mpc/ros/src/nmpc_ros/batch_tests", base_dir)
+
+        print(f"\n--- Processing Algorithm: {algo_name} (Source: {base_dir}) ---")
+        if not os.path.isdir(base_dir):
+            print(f"Warning: Directory '{base_dir}' not found. Skipping '{algo_name}'.")
+            continue
+        metrics_data, num_tests = gather_metrics(base_dir, num_trees)
+        if num_tests == 0:
+            print(f"Warning: No valid test data found for '{algo_name}'. Excluding from comparison.")
+            continue
+
+        all_metrics[algo_name] = metrics_data
+        test_counts[algo_name] = num_tests
+        # plot_grouped_metrics(metrics_data, num_tests, algo_name) # Generate individual plots too
+
+    if not all_metrics:
+        print("\nError: No algorithms processed successfully with data. Exiting batch analysis.")
+        return
+
+    print("\n--- Generating Comparison Plots & Summary Table ---")
+    plot_comparison_metrics(all_metrics, test_counts)
+    export_summary_table(all_metrics, test_counts)
+    print("\n--- Batch Analysis Complete ---")
 
 def plot_comparison_metrics(all_metrics, test_counts):
     """ Plots grouped bar charts comparing algorithms, with bar clipping and fixed legend. """
@@ -530,111 +622,13 @@ def export_summary_table(all_metrics, test_counts, output_path="__summary_metric
         print(f"\n❌ Error saving summary table to {output_path}: {e}")
 
 
-def gather_metrics(base_dir, num_trees=100, has_gt_ids=True):
-    run_folders = sorted(glob.glob(os.path.join(base_dir, "run_*")))
-    if not run_folders:
-        print(f"Warning: No 'run_*' directories found in {base_dir}")
-
-    metrics_lists = {
-        "Total Execution Time (s)": [],
-        "Final Entropy": [],
-        "Total Distance (m)": [],
-        "Average Velocity (m/s)": [],
-        "Average NMPC Step Execution Time (s)": [],
-        "False Positives (%)": [],
-        "Not Detected (%)": [],
-        "Percentage of Classified Trees (%)": [],
-        "Percentage of Correct Classifications on Classified Trees (%)": []
-    }
-
-    tests_found_metrics = 0
-    for run_idx, run_folder_path in enumerate(run_folders):
-        perf_files = glob.glob(os.path.join(run_folder_path, "*performance_metrics.csv"))
-        if not perf_files:
-            continue
-
-        perf_file = perf_files[0]
-        perf = load_performance_metrics(perf_file)
-        if perf is None:
-            continue
-
-        tests_found_metrics += 1
-        metrics_lists["Total Execution Time (s)"].append(perf.get("Total Execution Time (s)", np.nan))
-        metrics_lists["Final Entropy"].append(perf.get("Final Entropy", np.nan))
-        metrics_lists["Total Distance (m)"].append(perf.get("Total Distance (m)", np.nan))
-        metrics_lists["Average NMPC Step Execution Time (s)"].append(perf.get("Average Waypoint-to-Waypoint Time (s)", np.nan))
-
-        vel_files = glob.glob(os.path.join(run_folder_path, "*_velocity_commands.csv"))
-        if not vel_files:
-            metrics_lists["Average Velocity (m/s)"].append(np.nan)
-        else:
-            vel_file = vel_files[0]
-            avg_vel = load_average_velocity(vel_file)
-            metrics_lists["Average Velocity (m/s)"].append(avg_vel)
-
-        plot_data_files = glob.glob(os.path.join(run_folder_path, "*_plot_data.csv"))
-        if not plot_data_files or not has_gt_ids:
-            metrics_lists["False Positives (%)"].append(np.nan)
-            metrics_lists["Not Detected (%)"].append(np.nan)
-            metrics_lists["Percentage of Classified Trees (%)"].append(np.nan)
-            metrics_lists["Percentage of Correct Classifications on Classified Trees (%)"].append(np.nan)
-        else:
-            plot_data_file = plot_data_files[0]
-            fp_data = load_false_positives(plot_data_file, num_trees)
-            if fp_data:
-                fp, notdet, perc_class, perc_corr = fp_data
-                metrics_lists["False Positives (%)"].append(fp)
-                metrics_lists["Not Detected (%)"].append(notdet)
-                metrics_lists["Percentage of Classified Trees (%)"].append(perc_class)
-                metrics_lists["Percentage of Correct Classifications on Classified Trees (%)"].append(perc_corr)
-            else:
-                metrics_lists["False Positives (%)"].append(np.nan)
-                metrics_lists["Not Detected (%)"].append(np.nan)
-                metrics_lists["Percentage of Classified Trees (%)"].append(np.nan)
-                metrics_lists["Percentage of Correct Classifications on Classified Trees (%)"].append(np.nan)
-
-    if tests_found_metrics > 0:
-        print(f"Processed {base_dir}: Found metrics in {tests_found_metrics}/{len(run_folders)} runs.")
-    return metrics_lists, tests_found_metrics
-
-def run_batch_analysis(base_dirs_dict, num_trees):
-    all_metrics = {}
-    test_counts = {}
-
-    print("\n--- Starting Batch Analysis ---")
-    for algo_name, config in base_dirs_dict.items():
-        base_dir = os.path.join("/home/pantheon/drea/neural_mpc/ros/src/nmpc_ros/batch_tests", config["path"])
-        has_gt_ids = config.get("has_gt_ids", True)
-
-        print(f"\n--- Processing Algorithm: {algo_name} (Source: {base_dir}) ---")
-        if not os.path.isdir(base_dir):
-            print(f"Warning: Directory '{base_dir}' not found. Skipping '{algo_name}'.")
-            continue
-        metrics_data, num_tests = gather_metrics(base_dir, num_trees, has_gt_ids)
-        if num_tests == 0:
-            print(f"Warning: No valid test data found for '{algo_name}'. Excluding from comparison.")
-            continue
-
-        all_metrics[algo_name] = metrics_data
-        test_counts[algo_name] = num_tests
-
-    if not all_metrics:
-        print("\nError: No algorithms processed successfully with data. Exiting batch analysis.")
-        return
-
-    print("\n--- Generating Comparison Plots & Summary Table ---")
-    plot_comparison_metrics(all_metrics, test_counts)
-    export_summary_table(all_metrics, test_counts)
-    print("\n--- Batch Analysis Complete ---")
-
 if __name__ == "__main__":
-    num_trees = 100
+    num_trees = 25 
     base_dirs_to_analyze = {
-        f'mower_{num_trees}_slow': {"path": f'batch_test_{num_trees}trees_mower_slow_gt', "has_gt_ids": True},
-        f'mower_{num_trees}'     : {"path": f'batch_test_{num_trees}trees_mower_gt', "has_gt_ids": True},
-        f'linear_{num_trees}'    : {"path": f'batch_test_{num_trees}trees_linear_gt', "has_gt_ids": True},
-        f'greedy_{num_trees}'    : {"path": f'batch_test_{num_trees}trees_greedy_gt', "has_gt_ids": True},
-        f'nn_i_mpc_{num_trees}'    : {"path": f'batch_test_{num_trees}trees_nmpc', "has_gt_ids": False},
+        f'mower_{num_trees}_slow': f'batch_test_{num_trees}trees_mower_slow_gt',
+        f'mower_{num_trees}' : f'batch_test_{num_trees}trees_mower_gt',
+        f'linear_{num_trees}': f'batch_test_{num_trees}trees_linear_gt',
+        f'greedy_{num_trees}': f'batch_test_{num_trees}trees_greedy_gt',
     }
 
     print("\n--- Setting up Test Environment  ---")

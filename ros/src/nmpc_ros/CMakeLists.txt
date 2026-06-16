@@ -77,7 +77,8 @@ catkin_install_python(PROGRAMS
   data_association_node.py
   baseline_node.py
   nmpc_ros_node_decay.py
-  fov_mpc.py
+  nmpc_car.py
+  #fov_mpc.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

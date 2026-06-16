@@ -1,0 +1,32 @@
+<launch>
+
+  <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch"/>
+  <include file="$(find yolov7_ros)/launch/yolov7.launch"/>
+  
+  <arg name="node_start_delay" default="10.0" />  
+  
+  <!--
+  <node pkg="rostopic" type="rostopic" name="pose_publisher" 
+        args="pub -1 /agent_0/cmd/pose geometry_msgs/Pose 
+        '{position: {x: -3.0, y: -8.0, z: 1.2}, 
+          orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}'" /> 
+
+  <node name="data_association_node" pkg="nmpc_ros" type="data_association_node.py" output="screen" launch-prefix="bash -c 'sleep $(arg node_start_delay); $0 $@' "  ns="agent_0"/>
+  -->  
+
+  <node name="data_association_node" pkg="nmpc_ros" type="data_association_node.py" 
+        output="screen" 
+        launch-prefix="bash -c 'sleep $(arg node_start_delay); $0 $@' " 
+        ns="agent_0">
+    <remap from="/agent_0/camera/depth/image/compressed" to="/camera/depth/image/compressed"/>
+    <remap from="/agent_0/camera/depth/camera_info" to="/camera/depth/camera_info"/>
+  </node>
+
+  <node pkg="nmpc_ros" type="init_pose.py" name="pose_publisher" output="screen"/>
+  
+  <!-- Launch nmpc.py -->
+  <node name="main_node" pkg="nmpc_ros" type="nmpc_ros_node.py" output="screen" ns="agent_0"/>
+
+</launch>
+
+

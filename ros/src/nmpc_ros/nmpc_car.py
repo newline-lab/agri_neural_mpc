@@ -65,14 +65,16 @@ class NeuralMPCHusky:
         self.n_state = 3
         self.n_control = 2   # Ingressi di controllo: [v, omega]
         
-        self.NUM_TARGET_TREES = 2
-        self.NUM_OBSTACLE_TREES = 2
+        self.NUM_TARGET_TREES = 4   # subset alberi vicini da esplorare
+        self.NUM_OBSTACLE_TREES = 2 # subset alberi vicini da evitare
+
+        self.threshold_entropy = 0.15 # Quando albero considerato visto
 
         # ----------------------------------------------------------------------
         # COORDINATE HARDCODED DEGLI ALBERI (Origine coincidente con lo zero dell'Odom)
         # ----------------------------------------------------------------------
         self.trees_pos = np.array([
-            [5.0,  5.0], [10.0, 10.0]
+            [4.0,  4.0], [4.0, 8.0], [8.0, 4.0], [8.0, 8.0]
         ], dtype=np.float32)
         
         # Identificativi reali stabili degli alberi (0: raw, 1: ripe)
@@ -201,7 +203,10 @@ class NeuralMPCHusky:
         entropy_per_target = -ca.sum2(p_clipped * (ca.log(p_clipped)/ca.log(2)))
         return ca.Function(f'entropy_f_{num_targets}_dim', [p], [entropy_per_target])
 
-    def get_target_tree_indices(self, robot_position, num_target=None, entropy_threshold=0.025):
+    def get_target_tree_indices(self, robot_position, num_target=None):
+
+        entropy_threshold=self.threshold_entropy
+
         if num_target is None:
             num_target = self.NUM_TARGET_TREES
         distances = np.linalg.norm(self.trees_pos - robot_position, axis=1)
@@ -241,7 +246,7 @@ class NeuralMPCHusky:
         # Configurazione pesi della funzione di costo dell'MPC
         Q_dist = 1e-3
         R_v = 1e-2
-        R_omega = 1e-2
+        R_omega = 5e-4
         attraction = 0
         safe_distance = 1.2  # Distanza di sicurezza dagli alberi-ostacolo (metri)
         entropy_w = 40
@@ -283,6 +288,7 @@ class NeuralMPCHusky:
             attraction = attraction + min_dist_sq * Q_dist
             
             obj = obj + R_v * (U[0, i]**2) + R_omega * (U[1, i]**2)
+            
 
         # Inferenza batched con L4CasADi
         nn_full_batch_input = ca.vcat(ca_batch)
@@ -454,7 +460,7 @@ class NeuralMPCHusky:
             mpciter += 1
             rospy.loginfo("Entropia globale del sistema: %s", entropy_history[-1])
             
-            if all(v <= 0.025 for v in entropy_k.full().flatten()):
+            if all(v <= self.threshold_entropy for v in entropy_k.full().flatten()):
                 rospy.loginfo("Target informativo di riduzione entropia completato.")
                 break
 

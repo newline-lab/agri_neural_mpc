@@ -17,5 +17,12 @@ unity_exec/*
 *.eps
 unity_app/*
 *_exec*/*
-ros/ros.env
+*.env
 *.pdf
+*.tex
+*.gif
+*.avi
+*.mp4
+*.web*
+datasets/*
+

@@ -1,0 +1,74 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+    <xacro:property name="M_PI" value="3.1415926535897931" />
+
+    <xacro:property name="rx" value="-0.075" />  <xacro:property name="ry" value="0.34" />   <xacro:property name="rz" value="0.75" />  <link name="realsense_link">
+        <visual>
+            <geometry>
+                <box size="0.025 0.09 0.025"/>
+            </geometry>
+            <material name="dark_grey">
+                <color rgba="0.2 0.2 0.2 1"/>
+            </material>
+        </visual>
+        <collision>
+            <geometry>
+                <box size="0.025 0.09 0.025"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+        </inertial>
+    </link>
+
+    <joint name="realsense_joint" type="fixed">
+        <parent link="base_link" /> 
+        <child link="realsense_link" />
+        <origin xyz="${rx} ${ry} ${rz}" rpy="0.0 0.0 ${M_PI/2}" /> 
+    </joint>
+
+    <link name="realsense_optical_link" />
+
+    <joint name="realsense_optical_joint" type="fixed">
+        <parent link="realsense_link"/>
+        <child link="realsense_optical_link"/>
+        <origin xyz="0 0 0" rpy="${-M_PI/2} 0.0 ${-M_PI/2}" />
+    </joint>
+
+    <gazebo reference="realsense_link">
+        <material>Gazebo/Grey</material>
+        <sensor type="camera" name="realsense_camera">
+            <update_rate>15.0</update_rate>
+            <camera name="head">
+                <horizontal_fov>1.3962634</horizontal_fov> 
+                <image>
+                    <width>640</width>
+                    <height>480</height>
+                    <format>R8G8B8</format>
+                </image>
+                <clip>
+                    <near>0.02</near>
+                    <far>300</far>
+                </clip>
+            </camera>
+            <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
+                <alwaysOn>true</alwaysOn>
+                <updateRate>30.0</updateRate>
+                <cameraName>realsense</cameraName>
+                <imageTopicName>color/image_raw</imageTopicName>
+                <cameraInfoTopicName>color/camera_info</cameraInfoTopicName>
+                <frameName>realsense_optical_link</frameName>
+                <hackBaseline>0.07</hackBaseline>
+                <distortionK1>0.0</distortionK1>
+                <distortionK2>0.0</distortionK2>
+                <distortionK3>0.0</distortionK3>
+                <distortionT1>0.0</distortionT1>
+                <distortionT2>0.0</distortionT2>
+            </plugin>
+        </sensor>
+    </gazebo>
+
+</robot>

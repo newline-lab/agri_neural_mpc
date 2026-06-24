@@ -13,15 +13,18 @@ class TreeScoresMock:
         rospy.init_node('tree_scores_mock_node', anonymous=True)
         
         # 1. Configurazione Alberi (Deve combaciare ESATTAMENTE con l'NMPC)
+        #self.trees_pos = np.array([
+        #    [-3.5,  2], [-3.5, 7.5], [3.5, 2], [3.5, 7.5]
+        # ], dtype=np.float32)
         self.trees_pos = np.array([
-            [4.0,  4.0], [4.0, 8.0], [8.0, 4.0], [8.0, 8.0]
+            [-6.0, 0]
         ], dtype=np.float32)
         
         self.gt_ids = [0, 1, 0, 0]
         self.num_trees = len(self.trees_pos)
         
         # 2. Parametri di prossimità e accumulo informativo
-        self.PROXIMITY_THRESHOLD = 2.5   # Raggio di attivazione (metri). Sotto questa distanza il robot "vede" l'albero.
+        self.PROXIMITY_THRESHOLD = 2.8   # Raggio di attivazione (metri). Sotto questa distanza il robot "vede" l'albero.
         self.TIME_FOR_FULL_INFO = 5.0    # Tempo necessario (secondi) stando vicino all'albero per scansionarlo al 100%
         
         # Array per tracciare il tempo speso vicino a ciascun albero (inizializzato a 0)
@@ -80,6 +83,12 @@ class TreeScoresMock:
             msg = Float32MultiArray()
             msg.layout.dim.append(MultiArrayDimension(label="rows", size=self.num_trees, stride=self.num_trees * 2))
             msg.layout.dim.append(MultiArrayDimension(label="cols", size=2, stride=2))
+
+
+            # NON CAMBIA
+            scores = np.ones((self.num_trees, 2), dtype=np.float32) * 0.5 
+
+
             msg.data = scores.flatten().tolist()
             
             self.pub_scores.publish(msg)

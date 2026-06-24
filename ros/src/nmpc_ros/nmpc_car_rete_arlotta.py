@@ -20,9 +20,6 @@ from std_msgs.msg import Float32MultiArray
 from visualization_msgs.msg import MarkerArray
 import tf
 
-from geometry_msgs.msg import Pose, Point, Quaternion, Pose2D
-
-
 torch.jit.set_fusion_strategy([('STATIC', 0)])
 
 # Nota: Assicurati che queste funzioni custom nel tuo workspace ROS accettino la posa [x, y, theta]
@@ -59,7 +56,7 @@ class NeuralMPCHusky:
         self.hidden_layers = 3
         self.nn_input_dim = 3
 
-        self.N = 5
+        self.N = 20
         self.dt = 0.2  # Controllo a 5 Hz
         self.T = self.dt * self.N
         
@@ -77,7 +74,7 @@ class NeuralMPCHusky:
         # COORDINATE HARDCODED DEGLI ALBERI (Origine coincidente con lo zero dell'Odom)
         # ----------------------------------------------------------------------
         self.trees_pos = np.array([
-            [-4.0, -1.0, 0.0]
+            [-6.0,  0]
         ], dtype=np.float32)
         
         # Identificativi reali stabili degli alberi (0: raw, 1: ripe)
@@ -91,7 +88,7 @@ class NeuralMPCHusky:
         # Inizializzazione e caricamento delle reti neurali L4CasADi
         # ----------------------------------------------------------------------
         self.l4c_nn = []
-        for label in ['car', 'car']:
+        for label in ['ripe', 'raw']:
             model = MultiLayerPerceptron(input_dim=self.nn_input_dim,
                                         hidden_size=self.hidden_size,
                                         hidden_layers=self.hidden_layers)
@@ -111,8 +108,7 @@ class NeuralMPCHusky:
         rospy.init_node("nmpc_husky_node", anonymous=True, log_level=rospy.DEBUG)
         
         # Sottoscrizioni ai sensori fisici e moduli di percezione
-        # rospy.Subscriber("/odometry/filtered", Odometry, self.odom_callback)
-        rospy.Subscriber('/gps_data', Pose2D, self.gps_callback)
+        rospy.Subscriber("/odometry/filtered", Odometry, self.odom_callback)
         rospy.Subscriber("tree_scores", Float32MultiArray, self.tree_scores_callback)
         
         # Pubblicazioni per l'hardware e monitoraggio (Rviz)
@@ -122,21 +118,17 @@ class NeuralMPCHusky:
 
         self.baselines_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../baselines") if run_dir is None else run_dir
 
-    # def odom_callback(self, msg):
-    #     """ Estrae la posa [x, y, theta] direttamente dal topic dell'odometria filtrata """
-    #     px = msg.pose.pose.position.x
-    #     py = msg.pose.pose.position.y
+    def odom_callback(self, msg):
+        """ Estrae la posa [x, y, theta] direttamente dal topic dell'odometria filtrata """
+        px = msg.pose.pose.position.x
+        py = msg.pose.pose.position.y
         
-    #     # Conversione del quaternione in Yaw (Angolo Theta attorno all'asse Z)
-    #     ori = msg.pose.pose.orientation
-    #     quat = [ori.x, ori.y, ori.z, ori.w]
-    #     (_, _, yaw) = tf.transformations.euler_from_quaternion(quat)
+        # Conversione del quaternione in Yaw (Angolo Theta attorno all'asse Z)
+        ori = msg.pose.pose.orientation
+        quat = [ori.x, ori.y, ori.z, ori.w]
+        (_, _, yaw) = tf.transformations.euler_from_quaternion(quat)
         
-    #     self.current_state = [px, py, yaw]
-
-    def gps_callback(self, msg):
-        # Il messaggio Pose2D ha già x, y e theta (yaw)
-        self.current_state = [msg.x, msg.y, msg.theta]
+        self.current_state = [px, py, yaw]
 
     def tree_scores_callback(self, msg):
         data = msg.data
@@ -150,12 +142,7 @@ class NeuralMPCHusky:
             shape = (len(data) // 2, 2)
 
         try:
-            raw_scores = np.array(data).reshape(shape)
-            
-            # Mapping da [0, 1] a [0.5, 1]
-            scores = np.zeros_like(raw_scores)
-            scores[:, 0] = 0.5 + 0.5 * raw_scores[:, 0] 
-            scores[:, 1] = 1.0 - scores[:, 0]
+            scores = np.array(data).reshape(shape)
         except ValueError as e:
             rospy.logerr(f"[tree_scores_callback] Errore di rimodulazione shape degli score: {e}")
             return
@@ -222,7 +209,7 @@ class NeuralMPCHusky:
 
         if num_target is None:
             num_target = self.NUM_TARGET_TREES
-        distances = np.linalg.norm(self.trees_pos[:, :2] - robot_position, axis=1)
+        distances = np.linalg.norm(self.trees_pos - robot_position, axis=1)
         H = self.entropy_entire_field(self.beliefs_k).full()
         candidate_indices = np.where(H > entropy_threshold)[0]
         
@@ -236,7 +223,7 @@ class NeuralMPCHusky:
         return sorted_candidates[:num_target]
 
     def get_nearest_tree_indices(self, robot_position, num_obstacle=None):
-        distances = np.linalg.norm(self.trees_pos[:, :2] - robot_position, axis=1)
+        distances = np.linalg.norm(self.trees_pos - robot_position, axis=1)
         return np.argsort(distances)[:self.NUM_OBSTACLE_TREES]
 
     def mpc_opt(self, target_trees, target_lambdas, obstacle_trees, lb, ub, x0, steps=10):
@@ -246,23 +233,19 @@ class NeuralMPCHusky:
         X = opti.variable(self.n_state, steps + 1)
         U = opti.variable(self.n_control, steps)
 
-        # TARGET_TREES occupa 3 spazi (x, y, theta), L0 occupa 2 spazi, OBSTACLE occupa 3 spazi
-        param_size = self.n_state + self.NUM_TARGET_TREES * 5 + self.NUM_OBSTACLE_TREES * 3
+        param_size = self.n_state + self.NUM_TARGET_TREES * 4 + self.NUM_OBSTACLE_TREES * 2
         P0 = opti.parameter(param_size)
 
         p_idx = 0
         X0 = P0[p_idx : p_idx + self.n_state]; p_idx += self.n_state
-        # Cambia *2 in *3 per i tree param
-        TARGET_TREES_param = P0[p_idx : p_idx + self.NUM_TARGET_TREES*3].reshape((self.NUM_TARGET_TREES, 3)).T; p_idx += self.NUM_TARGET_TREES*3
-        # I lambda rimangono a dimensione 2
-        L0 = P0[p_idx : p_idx + self.NUM_TARGET_TREES*2].reshape((self.NUM_TARGET_TREES, 2)); p_idx += self.NUM_TARGET_TREES * 2
-        # Cambia *2 in *3 per gli ostacoli
-        OBSTACLE_TREES_param = P0[p_idx : p_idx + self.NUM_OBSTACLE_TREES*3].reshape((self.NUM_OBSTACLE_TREES, 3)).T        
+        TARGET_TREES_param = P0[p_idx : p_idx + self.NUM_TARGET_TREES*2].reshape((self.NUM_TARGET_TREES,2)).T; p_idx += self.NUM_TARGET_TREES*2
+        L0 = P0[p_idx : p_idx + self.NUM_TARGET_TREES*2].reshape((self.NUM_TARGET_TREES,2)); p_idx += self.NUM_TARGET_TREES * 2
+        OBSTACLE_TREES_param = P0[p_idx : p_idx + self.NUM_OBSTACLE_TREES*2].reshape((self.NUM_OBSTACLE_TREES,2)).T
         lambda_evol = [L0]
 
         # Configurazione pesi della funzione di costo dell'MPC
-        Q_dist = 1e-3
-        R_v = 1e-4
+        Q_dist = 1e-5
+        R_v = 1e-5
         R_omega = 1e-5
         attraction = 0
         safe_distance = 0  # Distanza di sicurezza dagli alberi-ostacolo (metri)
@@ -278,43 +261,27 @@ class NeuralMPCHusky:
             opti.subject_to(opti.bounded(-2*np.pi, X[2, i], 2*np.pi))
 
             # Limiti di attuazione motori fisici del Clearpath Husky
-            opti.subject_to(opti.bounded(-0.15, U[0, i], 0.15))       # Velocità lineare massima v (m/s)
-            opti.subject_to(opti.bounded(-1.0, U[1, i], 1.0))       # Velocità angolare massima omega (rad/s)
+            opti.subject_to(opti.bounded(-0.5, U[0, i], 0.5))       # Velocità lineare massima v (m/s)
+            opti.subject_to(opti.bounded(-2.0, U[1, i], 2.0))       # Velocità angolare massima omega (rad/s)
             
             opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))
 
             # Prevenzione delle collisioni
             for j in range(self.NUM_OBSTACLE_TREES):
                 obs_j_pos = OBSTACLE_TREES_param[:, j]
-                dist_sq_obs = ca.sumsqr(X[:2, i+1] - obs_j_pos[:2])
+                dist_sq_obs = ca.sumsqr(X[:2, i+1] - obs_j_pos)
                 opti.subject_to(dist_sq_obs >= safe_distance**2)
 
-
-            theta_fut = X[2, i+1]  # Orientamento futuro del ROBOT (asse X)
             distances_sq = []
             nn_batch = []
             for j in range(self.NUM_TARGET_TREES):
                 obj_j_pos = TARGET_TREES_param[:, j]
-                theta_target = obj_j_pos[2]
-                
-                # Vettore differenza globale (Macchina - Centro Robot)
-                dX = obj_j_pos[0] - X[0, i+1]
-                dY = obj_j_pos[1] - X[1, i+1]
-                distances_sq.append(dX**2 + dY**2 + 1e-6)
-                # Proiezione nel sistema di riferimento LOCALE del ROBOT
-                # Asse X del robot = avanti, Asse Y = sinistra
-                x_rel = dX * ca.cos(theta_fut) + dY * ca.sin(theta_fut)
-                y_rel = -dX * ca.sin(theta_fut) + dY * ca.cos(theta_fut)
-                # Calcolo Azimuth
-                theta_y_robot = theta_fut + (ca.pi / 2.0)
-                azimuth_raw = theta_y_robot - theta_target + ca.pi
-                azimuth_norm = ca.atan2(ca.sin(azimuth_raw), ca.cos(azimuth_raw))
-                # rete [dx, dy, azimuth]
-                nn_input = ca.horzcat(x_rel, y_rel, azimuth_norm)
-                nn_batch.append(nn_input)
-
+                diff = X[:2, i + 1] - obj_j_pos
+                distances_sq.append(ca.sumsqr(diff) + 1e-6)
+                heading_target = X[2, i+1]
+                nn_batch.append(ca.horzcat(diff.T, heading_target))
             ca_batch.append(ca.vcat([*nn_batch]))
-                        
+            
             min_dist_sq = distances_sq[0]
             for j in range(1, self.NUM_TARGET_TREES):
                 min_dist_sq = ca.fmin(min_dist_sq, distances_sq[j])
@@ -337,11 +304,7 @@ class NeuralMPCHusky:
         p_selected = ca.if_else(sel, prob_ripe, prob_raw)
         
         # Rigenerazione del vettore di likelihood bidimensionale per il calcolo Bayesiano
-        # z_k_bin = ca.horzcat(p_selected, 1.0 - p_selected)
-        # Mapping da [0, 1] a [0.5, 1] nel grafo CasADi ---
-        p_mapped = 0.5 + 0.5 * p_selected
-        # Rigenerazione del vettore di likelihood bidimensionale per il calcolo Bayesiano
-        z_k_bin = ca.horzcat(p_mapped, 1.0 - p_mapped)
+        z_k_bin = ca.horzcat(p_selected, 1.0 - p_selected)
         
         for i in range(steps):
             lambda_next = self.bayes(lambda_evol[-1], z_k_bin[i*self.NUM_TARGET_TREES:(i+1)*self.NUM_TARGET_TREES,:])
@@ -350,9 +313,12 @@ class NeuralMPCHusky:
         entropy_obj = 0
         for i in range(1, steps+1):
             entropy_future = self.entropy_target(lambda_evol[i])
-            entropy_obj += ca.exp(-2*i)*ca.logsumexp(-entropy_w*entropy_future)
+            entropy_obj += ca.exp(0.9**i)*ca.logsumexp(-entropy_w*entropy_future)
 
-        sq_dist_to_targets = ca.sum1((X0[:2] - TARGET_TREES_param[:2, :])**2)
+        entropy_final = self.entropy_target(lambda_evol[steps])
+        entropy_obj += 50.0 * ca.logsumexp(-entropy_w * entropy_final)
+
+        sq_dist_to_targets = ca.sum1((X0[:2] - TARGET_TREES_param)**2)
         min_sq_dist = ca.mmin(sq_dist_to_targets)
 
         threshold_sq_dist = 3.0
@@ -360,11 +326,11 @@ class NeuralMPCHusky:
         sigmoid_factor = 1.0 / (1.0 + ca.exp(-sigmoid_steepness * (min_sq_dist - threshold_sq_dist)))
         modulated_attraction_term = attraction * sigmoid_factor
 
-        opti.minimize(obj - 10*entropy_obj + 0*modulated_attraction_term)                                 
+        opti.minimize(obj - entropy_obj + 0*modulated_attraction_term)                                 
         
         options = {
             "ipopt": {
-                "tol": 1e-5,
+                "tol": 1e-4,
                 "warm_start_init_point": "yes",
                 "print_level": 0,
                 "sb": "no",
@@ -372,27 +338,15 @@ class NeuralMPCHusky:
                 "max_iter": 1000,
             }
         }
-        # options = {
-        #     "ipopt": {
-        #         "tol": 5e-2,                      # Rilassa la tolleranza generale
-        #         "acceptable_tol": 1e-1,           # Accetta soluzioni meno precise...
-        #         "acceptable_iter": 5,             # ...se si mantengono stabili per 5 iterazioni
-        #         "max_iter": 40,                   # Tassativo: ferma il solutore per evitare di sforare il dt
-        #         "warm_start_init_point": "yes",
-        #         "print_level": 0,
-        #         "sb": "no",
-        #         "hessian_approximation": 'limited-memory'
-        #     }
-        # }
         opti.solver("ipopt", options)
         inputs = [P0, opti.x, opti.lam_g]
         outputs = [U[:, 0], X, opti.x, opti.lam_g]
 
         p0_val = ca.vertcat(
             x0,
-            ca.reshape(target_trees, 3 * self.NUM_TARGET_TREES, 1),
-            ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
-            ca.reshape(obstacle_trees, 3 * self.NUM_OBSTACLE_TREES, 1)
+            ca.reshape(target_trees, 2* self.NUM_TARGET_TREES, 1),
+            ca.reshape(target_lambdas, 2* self.NUM_TARGET_TREES, 1),
+            ca.reshape(obstacle_trees, 2* self.NUM_OBSTACLE_TREES, 1)
         )
         opti.set_value(P0, p0_val)
 
@@ -404,7 +358,7 @@ class NeuralMPCHusky:
     def run_simulation(self):
         lb, ub = self.get_domain(self.trees_pos)
         
-        rospy.loginfo("In attesa di dati validi dal topic di odometria...")
+        rospy.loginfo("In attesa di dati validi dal topic di odometria (/odometry/filtered)...")
         while self.current_state is None and not rospy.is_shutdown():
             rospy.sleep(0.05)
         rospy.loginfo("Modulo di localizzazione agganciato.")
@@ -466,9 +420,9 @@ class NeuralMPCHusky:
                 else:
                     P0_val = ca.vertcat(
                         x_k,
-                        ca.reshape(target_trees_subset, 3 * self.NUM_TARGET_TREES, 1),
-                        ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
-                        ca.reshape(obstacle_trees_subset, 3 * self.NUM_OBSTACLE_TREES, 1)
+                        ca.reshape(target_trees_subset, 2* self.NUM_TARGET_TREES, 1),
+                        ca.reshape(target_lambdas, 2* self.NUM_TARGET_TREES, 1),
+                        ca.reshape(obstacle_trees_subset, 2* self.NUM_OBSTACLE_TREES, 1)
                     )
                     u, x_traj, x_dec_prev, lam_g_prev = mpc_step(P0_val, x_dec_prev, lam_g_prev)
 

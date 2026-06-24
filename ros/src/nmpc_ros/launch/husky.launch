@@ -1,0 +1,11 @@
+<launch>   
+    <include file="$(find husky_gazebo)/launch/empty_world.launch" />
+
+    <node pkg="nmpc_ros" type="gps_data.py" name="gps_data_node" output="screen" />
+
+    <node pkg="nmpc_ros" type="mock_car_score.py" name="mock_car_score_node" output="screen" />
+</launch>
+
+<!-- Per avere la telecamera esegui prima
+export HUSKY_URDF_EXTRAS=~/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/urdf/custom_realsense.urdf.xacro
+-->

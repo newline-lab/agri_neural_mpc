@@ -68,8 +68,8 @@ class NeuralMPCHusky:
         self.n_state = 3
         self.n_control = 2   # Ingressi di controllo: [v, omega]
         
-        self.NUM_TARGET_TREES = 1   # subset alberi vicini da esplorare
-        self.NUM_OBSTACLE_TREES = 1 # subset alberi vicini da evitare
+        self.NUM_TARGET_TREES = 2   # subset alberi vicini da esplorare
+        self.NUM_OBSTACLE_TREES = 2 # subset alberi vicini da evitare
 
         self.threshold_entropy = 0.15 # Quando albero considerato visto
 
@@ -77,7 +77,8 @@ class NeuralMPCHusky:
         # COORDINATE HARDCODED DEGLI ALBERI (Origine coincidente con lo zero dell'Odom)
         # ----------------------------------------------------------------------
         self.trees_pos = np.array([
-            [-4.0, -1.0, 0.0]
+            [-4.0, -1.0, 0.0],
+            [-4.0, -10.0, 0.0]
         ], dtype=np.float32)
         
         # Identificativi reali stabili degli alberi (0: raw, 1: ripe)
@@ -261,7 +262,7 @@ class NeuralMPCHusky:
         lambda_evol = [L0]
 
         # Configurazione pesi della funzione di costo dell'MPC
-        Q_dist = 1e-3
+        Q_dist = 1e-1
         R_v = 1e-4
         R_omega = 1e-5
         attraction = 0
@@ -293,6 +294,7 @@ class NeuralMPCHusky:
             theta_fut = X[2, i+1]  # Orientamento futuro del ROBOT (asse X)
             distances_sq = []
             nn_batch = []
+            side_observation_cost = 0
             for j in range(self.NUM_TARGET_TREES):
                 obj_j_pos = TARGET_TREES_param[:, j]
                 theta_target = obj_j_pos[2]
@@ -300,7 +302,8 @@ class NeuralMPCHusky:
                 # Vettore differenza globale (Macchina - Centro Robot)
                 dX = obj_j_pos[0] - X[0, i+1]
                 dY = obj_j_pos[1] - X[1, i+1]
-                distances_sq.append(dX**2 + dY**2 + 1e-6)
+                dist_sq = dX**2 + dY**2 + 1e-6
+                distances_sq.append(dist_sq)
                 # Proiezione nel sistema di riferimento LOCALE del ROBOT
                 # Asse X del robot = avanti, Asse Y = sinistra
                 x_rel = dX * ca.cos(theta_fut) + dY * ca.sin(theta_fut)
@@ -312,6 +315,10 @@ class NeuralMPCHusky:
                 # rete [dx, dy, azimuth]
                 nn_input = ca.horzcat(x_rel, y_rel, azimuth_norm)
                 nn_batch.append(nn_input)
+
+                # Per allineamento
+                dist = ca.sqrt(dist_sq)
+                side_observation_cost += (1.0 - (y_rel / dist))
 
             ca_batch.append(ca.vcat([*nn_batch]))
                         
@@ -355,35 +362,38 @@ class NeuralMPCHusky:
         sq_dist_to_targets = ca.sum1((X0[:2] - TARGET_TREES_param[:2, :])**2)
         min_sq_dist = ca.mmin(sq_dist_to_targets)
 
-        threshold_sq_dist = 3.0
-        sigmoid_steepness = 10.0
+        threshold_sq_dist = 15.0
+        sigmoid_steepness = 0.5
         sigmoid_factor = 1.0 / (1.0 + ca.exp(-sigmoid_steepness * (min_sq_dist - threshold_sq_dist)))
         modulated_attraction_term = attraction * sigmoid_factor
 
-        opti.minimize(obj - 10*entropy_obj + 0*modulated_attraction_term)                                 
+        modulated_side_cost = side_observation_cost * sigmoid_factor
+
+
+        opti.minimize(obj - 10*entropy_obj + 1*modulated_attraction_term + 2*modulated_side_cost)                                 
         
-        options = {
-            "ipopt": {
-                "tol": 1e-5,
-                "warm_start_init_point": "yes",
-                "print_level": 0,
-                "sb": "no",
-                "hessian_approximation": 'limited-memory',
-                "max_iter": 1000,
-            }
-        }
         # options = {
         #     "ipopt": {
-        #         "tol": 5e-2,                      # Rilassa la tolleranza generale
-        #         "acceptable_tol": 1e-1,           # Accetta soluzioni meno precise...
-        #         "acceptable_iter": 5,             # ...se si mantengono stabili per 5 iterazioni
-        #         "max_iter": 40,                   # Tassativo: ferma il solutore per evitare di sforare il dt
+        #         "tol": 1e-5,
         #         "warm_start_init_point": "yes",
         #         "print_level": 0,
         #         "sb": "no",
-        #         "hessian_approximation": 'limited-memory'
+        #         "hessian_approximation": 'limited-memory',
+        #         "max_iter": 1000,
         #     }
         # }
+        options = {
+            "ipopt": {
+                "tol": 1e-2,                      # Rilassa la tolleranza generale
+                "acceptable_tol": 1e-1,           # Accetta soluzioni meno precise...
+                "acceptable_iter": 5,             # ...se si mantengono stabili per 5 iterazioni
+                "max_iter": 40,                   # Tassativo: ferma il solutore per evitare di sforare il dt
+                "warm_start_init_point": "yes",
+                "print_level": 0,
+                "sb": "no",
+                "hessian_approximation": 'limited-memory'
+            }
+        }
         opti.solver("ipopt", options)
         inputs = [P0, opti.x, opti.lam_g]
         outputs = [U[:, 0], X, opti.x, opti.lam_g]

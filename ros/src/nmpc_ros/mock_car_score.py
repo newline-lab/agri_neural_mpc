@@ -39,7 +39,8 @@ class CarScoresMock:
         
         # [X, Y, Theta_target]
         self.cars_pos = np.array([
-            [-4.0, -1.0, 0.0]
+            [-4.0, -1.0, 0.0],
+            [-4.0, -10.0, 0.0]
         ], dtype=np.float32)
         
         self.gt_ids = [1, 0] # 1: Ripe (Verde), 0: Raw (Rossa)
@@ -90,6 +91,7 @@ class CarScoresMock:
         
     def run(self):
         rate = rospy.Rate(int(1/self.dt))
+        scores = np.zeros((self.num_cars, 2), dtype=np.float32)
         
         while not rospy.is_shutdown():
             if self.robot_pos is not None:
@@ -122,6 +124,12 @@ class CarScoresMock:
                         p_correct = logit.item()
                         
                         rospy.loginfo(f"[Mock] Auto {i} | Terna Robot -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
+            
+                        if p_correct > 0.8:
+                            scores[i, 0] = 1.0
+                        else:
+                            scores[i, 0] = 0.0
+            
             else:
                 rospy.logwarn_throttle(2.0, "[Mock] Nessun dato odometrico in arrivo.")
 
@@ -130,13 +138,14 @@ class CarScoresMock:
             msg.layout.dim.append(MultiArrayDimension(label="rows", size=self.num_cars, stride=self.num_cars * 2))
             msg.layout.dim.append(MultiArrayDimension(label="cols", size=2, stride=2))
             
-            scores = np.zeros((self.num_cars, 2), dtype=np.float32)
             # scores[i, 0] = p_correct (inserire qui logica assegnazione risultati)
             
             msg.data = scores.flatten().tolist()
             
             self.pub_scores.publish(msg)
             rate.sleep()
+
+ # scores = np.zeros((self.num_cars, 2), dtype=np.float32)
 
     def spawn_cars_in_gazebo(self):
         rospy.loginfo("[Mock] In attesa del servizio di spawn di Gazebo...")

@@ -125,10 +125,10 @@ class CarScoresMock:
                         
                         rospy.loginfo(f"[Mock] Auto {i} | Terna Robot -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
             
-                        if p_correct > 0.8:
-                            scores[i, 0] = 1.0
-                        else:
-                            scores[i, 0] = 0.0
+                        # if p_correct > 0.8:
+                        #     scores[i, 0] = 1.0
+                        # else:
+                        #     scores[i, 0] = 0.0
             
             else:
                 rospy.logwarn_throttle(2.0, "[Mock] Nessun dato odometrico in arrivo.")

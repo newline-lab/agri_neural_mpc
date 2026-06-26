@@ -22,6 +22,9 @@ import tf
 
 from geometry_msgs.msg import Pose, Point, Quaternion, Pose2D
 
+from gazebo_msgs.srv import SetModelState
+from gazebo_msgs.msg import ModelState
+
 
 torch.jit.set_fusion_strategy([('STATIC', 0)])
 
@@ -66,7 +69,7 @@ class NeuralMPCHusky:
         # Specifiche del robot reale (Uniciclo)
         self.nx = 3          # Stato: [x, y, theta]
         self.n_state = 3
-        self.n_control = 2   # Ingressi di controllo: [v, omega]
+        self.n_control = 3   # Ingressi di controllo: [v, omega]
         
         self.NUM_TARGET_TREES = 2   # subset alberi vicini da esplorare
         self.NUM_OBSTACLE_TREES = 2 # subset alberi vicini da evitare
@@ -120,6 +123,10 @@ class NeuralMPCHusky:
         self.cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)
         self.pred_path_pub = rospy.Publisher("predicted_path", Path, queue_size=10)
         self.tree_markers_pub = rospy.Publisher("tree_markers", MarkerArray, queue_size=10)
+
+        # Nel costruttore __init__
+        rospy.wait_for_service('/gazebo/set_model_state')
+        self.set_state_srv = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
 
         self.baselines_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../baselines") if run_dir is None else run_dir
 
@@ -179,21 +186,15 @@ class NeuralMPCHusky:
 
     @staticmethod
     def kin_model(dt):
-        """ Modello cinematico differenziale dell'uniciclo integrato con RK4 """
         x_sym = ca.SX.sym('x', 3)  # [x, y, theta]
-        u_sym = ca.SX.sym('u', 2)  # [v, omega]
+        u_sym = ca.SX.sym('u', 3)  # [vx, vy, omega] (Controllo omnidirezionale)
 
-        theta = x_sym[2]
-        v = u_sym[0]
-        omega = u_sym[1]
-
-        # Equazioni differenziali non-olonome
         x_dot = ca.vertcat(
-            v * ca.cos(theta),
-            v * ca.sin(theta),
-            omega
+            u_sym[0],  # vx
+            u_sym[1],  # vy
+            u_sym[2]   # omega
         )
-
+        
         f_continuous = ca.Function('f_cont', [x_sym, u_sym], [x_dot], ['x', 'u'], ['x_dot'])
         k1 = f_continuous(x_sym, u_sym)
         k2 = f_continuous(x_sym + dt / 2 * k1, u_sym)
@@ -278,10 +279,11 @@ class NeuralMPCHusky:
             opti.subject_to(opti.bounded(lb[1] - 15.0, X[1, i], ub[1] + 15.0))
             opti.subject_to(opti.bounded(-2*np.pi, X[2, i], 2*np.pi))
 
-            # Limiti di attuazione motori fisici del Clearpath Husky
-            opti.subject_to(opti.bounded(-0.15, U[0, i], 0.15))       # Velocità lineare massima v (m/s)
-            opti.subject_to(opti.bounded(-1.0, U[1, i], 1.0))       # Velocità angolare massima omega (rad/s)
-            
+            # Limiti di attuazione omni (vx, vy, omega)
+            opti.subject_to(opti.bounded(-0.5, U[0, i], 0.5)) # vx
+            opti.subject_to(opti.bounded(-0.5, U[1, i], 0.5)) # vy
+            opti.subject_to(opti.bounded(-1.0, U[2, i], 1.0)) # omega
+
             opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))
 
             # Prevenzione delle collisioni
@@ -327,7 +329,7 @@ class NeuralMPCHusky:
                 min_dist_sq = ca.fmin(min_dist_sq, distances_sq[j])
             attraction = attraction + min_dist_sq * Q_dist
             
-            obj = obj + R_v * (U[0, i]**2) + R_omega * (U[1, i]**2)
+            obj = obj + R_v * (U[0, i]**2 + U[1, i]**2) + R_omega * (U[2, i]**2)
             
 
         # Inferenza batched con L4CasADi
@@ -495,10 +497,26 @@ class NeuralMPCHusky:
             omega_cmd = float(u[1])
 
             # INVIO COMANDI CINEMATICI DIRETTAMENTE ALL'HUSKY
-            twist_msg = Twist()
-            twist_msg.linear.x = v_cmd
-            twist_msg.angular.z = omega_cmd
-            self.cmd_vel_pub.publish(twist_msg)
+            # Dentro il loop di controllo, dopo aver risolto l'MPC:
+            x_next = x_traj[:, 1].full().flatten() # [x, y, theta]
+
+            # Crea il messaggio di stato
+            state_msg = ModelState()
+            state_msg.model_name = 'husky' # Sostituisci con il nome del tuo modello in Gazebo
+            state_msg.pose.position.x = x_next[0]
+            state_msg.pose.position.y = x_next[1]
+            # Converti theta (yaw) in quaternione per ROS
+            q = tf.transformations.quaternion_from_euler(0, 0, x_next[2])
+            state_msg.pose.orientation.x = q[0]
+            state_msg.pose.orientation.y = q[1]
+            state_msg.pose.orientation.z = q[2]
+            state_msg.pose.orientation.w = q[3]
+
+            # Teletrasporto
+            self.set_state_srv(state_msg)
+
+            # Importante: Aggiorna lo stato corrente del robot localmente per il prossimo ciclo MPC
+            self.current_state = list(x_next)
 
             # Pubblicazione del cammino pianificato predittivo
             predicted_path_msg = create_path_from_mpc_prediction(x_traj[:self.nx, 1:])

@@ -31,6 +31,7 @@ class MultiLayerPerceptron(torch.nn.Module):
         for layer in self.hidden_layer:
             x = torch.tanh(layer(x))
         x = self.out_layer(x)
+        # x = torch.sigmoid(self.out_layer(x))   # bound to (0,1)
         return x
 
 class CarScoresMock:
@@ -40,10 +41,12 @@ class CarScoresMock:
         # [X, Y, Theta_target]
         self.cars_pos = np.array([
             [-4.0, -1.0, 0.0],
-            [-4.0, -10.0, 0.0]
+            [-4.0, 5.0, 0.0],
+            [-3.5, 10.0, 0.0],
+            [4.0, 15.0, -np.pi]
         ], dtype=np.float32)
         
-        self.gt_ids = [1, 0] # 1: Ripe (Verde), 0: Raw (Rossa)
+        self.gt_ids = [0, 0, 0, 0] # 1: Ripe (Verde), 0: Raw (Rossa)
         self.num_cars = len(self.cars_pos)
         
         self.robot_pos = None
@@ -125,10 +128,10 @@ class CarScoresMock:
                         
                         rospy.loginfo(f"[Mock] Auto {i} | Terna Robot -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
             
-                        # if p_correct > 0.8:
-                        #     scores[i, 0] = 1.0
-                        # else:
-                        #     scores[i, 0] = 0.0
+                        if p_correct > 0.81:
+                            scores[i, 0] = 1.0
+                        else:
+                            scores[i, 0] = 0.0
             
             else:
                 rospy.logwarn_throttle(2.0, "[Mock] Nessun dato odometrico in arrivo.")

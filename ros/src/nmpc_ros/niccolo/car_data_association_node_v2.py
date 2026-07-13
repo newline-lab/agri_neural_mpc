@@ -70,8 +70,7 @@ import utm
 
 # yolov7 repo root must be importable as top-level 'models' / 'utils'.
 # Adjust this path if the yolov7-ros checkout moves.
-_YOLOV7_REPO_ROOT = ("/home/simulator/Desktop/neural_mpc_arlotta/paper_extension/"
-                     "agri_neural_mpc/ros/src/yolov7-ros/src")
+_YOLOV7_REPO_ROOT = ("/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/yolov7-ros/src")
 if _YOLOV7_REPO_ROOT not in sys.path:
     sys.path.insert(0, _YOLOV7_REPO_ROOT)
 
@@ -443,7 +442,7 @@ class DataAssociationNode:
         rospy.init_node("data_association_node")
 
         # --- params
-        weights = rospy.get_param("~weights")
+        weights = rospy.get_param("~weights", '/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/yolov7-ros/weights/yolov7.pt')
         self.cont_thresh = rospy.get_param("~containment_thresh", 0.7)
         conf_thresh = rospy.get_param("~conf_thresh", 0.4)
         iou_thresh = rospy.get_param("~iou_thresh", 0.45)
@@ -491,7 +490,7 @@ class DataAssociationNode:
                              self._car_map_cb, queue_size=1)
 
         # --- GPS
-        self.gps_source = rospy.get_param("~gps_source", "serial")
+        self.gps_source = rospy.get_param("~gps_source", "topic")
         if self.gps_source == "serial":
             self.gps = GpsRtkBackend(rospy.get_param("~origin_lat"),
                                      rospy.get_param("~origin_lon"))

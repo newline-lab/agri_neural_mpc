@@ -69,7 +69,7 @@ class CarScoresMock:
         
         # Publisher e Subscriber
         self.sub_gps = rospy.Subscriber('/gps_data', Pose2D, self.gps_callback)
-        self.pub_scores = rospy.Publisher('tree_scores', Float32MultiArray, queue_size=10)
+        self.pub_scores = rospy.Publisher('/parking/scores', Float32MultiArray, queue_size=10)
         
         rospy.loginfo("[+] Nodo Mock Auto-Percettivo avviato. In attesa di odometria...")
 

@@ -5,6 +5,7 @@ import time
 import csv
 import math
 import threading
+import json
 
 import rospy
 import casadi as ca
@@ -90,13 +91,37 @@ class NeuralMPCHusky:
         # ----------------------------------------------------------------------
         # COORDINATE HARDCODED DEGLI ALBERI (Origine coincidente con lo zero dell'Odom)
         # ----------------------------------------------------------------------
-        self.trees_pos = np.array([
-            [-4.0, -1.0, 0.0],
-            # [-4.0, 5.0, 0.0],
-            # [-3.5, 10.0, 0.0],
-            [4.0, 15.0, -np.pi]
-        ], dtype=np.float32)
-        
+        # self.trees_pos = np.array([
+        #     [-4.0, -1.0, 0.0],
+        #     # [-4.0, 5.0, 0.0],
+        #     # [-3.5, 10.0, 0.0],
+        #     [4.0, 15.0, -np.pi]
+        # ], dtype=np.float32)
+        file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/car_map_final.json"
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                cars = json.load(f).get("cars", [])
+            # Carichiamo i dati calcolando lo spostamento geometrico in base all'angolo
+            extracted = []
+            for c in cars:
+                x, y, rad = c["x"], c["y"], c["orientation_rad"]
+                # if c["class"] == "car_back":
+                #     x += 4.0 * np.cos(rad)
+                #     y += 4.0 * np.sin(rad)
+                extracted.append([x, y, rad])
+            self.trees_pos = np.array(extracted, dtype=np.float32)
+        else:
+            # Fallback hardcoded se il file non esiste
+            self.trees_pos = np.array(
+                [
+                    [43.04, -2.149, 1.4337],
+                    [49.701, -7.093, -1.6995],
+                    [52.743, -7.233, -1.7331],
+                ],
+                dtype=np.float32,
+            )
+        print(self.trees_pos)
+
         # Identificativi reali stabili degli alberi (0: raw, 1: ripe)
         self.trees_gt_id = np.array([0, 1], dtype=np.uint8)
         
@@ -130,7 +155,7 @@ class NeuralMPCHusky:
         # Sottoscrizioni ai sensori fisici e moduli di percezione
         # rospy.Subscriber("/odometry/filtered", Odometry, self.odom_callback)
         rospy.Subscriber('/gps_data', Pose2D, self.gps_callback)
-        rospy.Subscriber("tree_scores", Float32MultiArray, self.tree_scores_callback)
+        rospy.Subscriber("/parking/scores", Float32MultiArray, self.tree_scores_callback)
         
         # Pubblicazioni per l'hardware e monitoraggio (Rviz)
         self.cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=10)
@@ -168,6 +193,9 @@ class NeuralMPCHusky:
 
         try:
             raw_scores = np.array(data).reshape(shape)
+            # Se la shape è invertita (2, N) invece di (N, 2), trasponi la matrice
+            if raw_scores.shape[1] != 2 and raw_scores.shape[0] == 2:
+                raw_scores = raw_scores.T
             
             # Mapping da [0, 1] a [0.5, 1]
             scores = np.zeros_like(raw_scores)
@@ -614,7 +642,7 @@ class NeuralMPCHusky:
             
             if all(v <= self.threshold_entropy for v in entropy_k.full().flatten()):
                 rospy.loginfo("Target informativo di riduzione entropia completato.")
-                break
+                # break
 
             loop_elapsed = time.time() - loop_iter_start
             sleep_time = self.dt - loop_elapsed

@@ -104,7 +104,7 @@ if __name__ == '__main__':
         grid_min=-6.0, 
         grid_max=6.0, 
         resolution=2500, # Modifica questo valore se vuoi una griglia più fitta
-        threshold=0.845  # La tua soglia
+        threshold=0.55  # La tua soglia
     )
     
     # 4. Stampa formattata pronta per il copia-incolla

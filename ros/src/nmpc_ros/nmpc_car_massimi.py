@@ -68,7 +68,7 @@ class NeuralMPCHusky:
         self.n_state = 3
         self.n_control = 2   # Ingressi di controllo: [v, omega]
         
-        self.NUM_TARGET_TREES = 2   # subset alberi vicini da esplorare
+        self.NUM_TARGET_TREES = 1   # subset alberi vicini da esplorare
         self.NUM_OBSTACLE_TREES = 2 # subset alberi vicini da evitare
 
         self.threshold_entropy = 0.15 # Quando albero considerato visto
@@ -77,13 +77,14 @@ class NeuralMPCHusky:
         # Massimi locali
         # ----------------------------------------------------------------------
         self.punti_soglia = [
-            # [2.97, -1.4526, -2.618],
-            [3.4262, -0.2617, -1.5708],
-            [1.6062, 3.3926, -0.5236],
-            [0.0696, 3.7959, -0.0],
-            [-1.3565, 1.5198, 0.5236],
-            [-2.2353, 1.6399, 1.0472],
-            [-2.6242, -0.1993, 1.5708],
+            [-1.3037, -2.5762, -2.0944],
+            [-0.934, -2.3745, -1.5708],
+            [3.2101, 0.1273, -0.0],
+            [2.9268, 0.569, 0.5236],
+            [0.1753, 3.5078, 1.0472],
+            [-1.1693, 3.066, 1.5708],
+            [-0.4298, 2.9508, 2.0944],
+            [-1.5582, 3.2533, 2.618],
         ]
 
         # ----------------------------------------------------------------------
@@ -91,8 +92,8 @@ class NeuralMPCHusky:
         # ----------------------------------------------------------------------
         self.trees_pos = np.array([
             [-4.0, -1.0, 0.0],
-            [-4.0, 5.0, 0.0],
-            [-3.5, 10.0, 0.0],
+            # [-4.0, 5.0, 0.0],
+            # [-3.5, 10.0, 0.0],
             [4.0, 15.0, -np.pi]
         ], dtype=np.float32)
         
@@ -258,67 +259,54 @@ class NeuralMPCHusky:
 
     def get_closest_threshold_state(self, robot_state, target_trees):
         """
-        Trova la posa globale [X, Y, Theta] ottima derivata dai punti soglia,
-        effettuando i cambi di terna corretti tra sistema globale e locale.
-        Predilige il punto geometricamente più vicino minimizzando lo sforzo di rotazione.
+        Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
+        Invece di lavorare nel frame globale, calcola lo stato relativo attuale del robot
+        e sceglie il picco più vicino nello spazio relativo (che coincide con l'input della rete).
         """
         rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
-        best_cost = float('inf')  # Cambiato da best_dist a best_cost per chiarezza
-        best_state = [0.0, 0.0, 0.0]
+        best_cost = float('inf')
+        best_peak = [0.0, 0.0, 0.0]
 
-        # --- PARAMETRO DI TUNING ---
         # W_theta pesa l'importanza della rotazione rispetto alla distanza.
-        # Es: Se W_theta = 1.0, 1 radiante di rotazione (circa 57°) equivale a 1 metro di distanza.
-        # Alzalo se vuoi che il robot eviti tassativamente di ruotare, abbassalo se conta quasi solo la distanza.
         W_theta = 1.2 
 
         for tree in target_trees:
             tx, ty, theta_target = tree[0], tree[1], tree[2]
             
+            # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
+            dX = rx - tx
+            dY = ry - ty
+            
+            # Proiezione della posizione nel frame della macchina
+            curr_x_rel = dX * math.cos(theta_target) + dY * math.sin(theta_target)
+            curr_y_rel = -dX * math.sin(theta_target) + dY * math.cos(theta_target)
+            
+            # Calcolo Azimut attuale (0 se asse y robot e asse x macchina si guardano)
+            curr_theta_y = rtheta + (math.pi / 2.0)
+            curr_azimuth_raw = curr_theta_y - theta_target + math.pi
+            curr_azimuth = math.atan2(math.sin(curr_azimuth_raw), math.cos(curr_azimuth_raw))
+            
+            # --- 2. RICERCA DEL PICCO OTTIMO NELLO SPAZIO RELATIVO ---
             for p in self.punti_soglia:
-                dx, dy, dtheta = p[0], p[1], p[2]
+                # p è [x_rel_opt, y_rel_opt, azimuth_opt] estratti dall'analisi della rete
+                p_x_rel, p_y_rel, p_azimuth = p[0], p[1], p[2]
                 
-                # --- 1. ROTAZIONE OFFSET NEL FRAME DELL'ALBERO ---
-                offset_x_rot = dx * math.cos(theta_target) - dy * math.sin(theta_target)
-                offset_y_rot = dx * math.sin(theta_target) + dy * math.cos(theta_target)
+                # Distanza puramente nel piano relativo
+                dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
                 
-                # Calcolo la posizione globale assoluta del punto candidato
-                cand_x = tx - offset_x_rot
-                cand_y = ty - offset_y_rot
-                cand_theta = theta_target + dtheta
+                # Sforzo di rotazione sull'azimut
+                delta_azimuth = p_azimuth - curr_azimuth
+                delta_azimuth_norm = math.atan2(math.sin(delta_azimuth), math.cos(delta_azimuth))
+                sforzo_rotazione = abs(delta_azimuth_norm)
                 
-                # --- 2. VETTORE DIFFERENZA GLOBALE ---
-                dX = cand_x - rx
-                dY = cand_y - ry
-                
-                # --- 3. PROIEZIONE NEL FRAME LOCALE DEL ROBOT ---
-                x_rel = dX * math.cos(rtheta) + dY * math.sin(rtheta)
-                y_rel = -dX * math.sin(rtheta) + dY * math.cos(rtheta)
-                
-                # --- 4. DISTANZA GEOMETRICA CRUDA ---
-                dist_geometrica = math.hypot(x_rel, y_rel)
-                
-                # --- 5. CALCOLO SFORZO DI ROTAZIONE ---
-                # Calcolo la differenza tra dove guarda il robot ora e la posa finale desiderata
-                delta_theta = cand_theta - rtheta
-                
-                # Normalizzazione nell'intervallo [-pi, pi] usando atan2(sin, cos)
-                # Questo evita anomalie di wrapping (es. differenza tra +179° e -179° diventa 2° e non 358°)
-                delta_theta_norm = math.atan2(math.sin(delta_theta), math.cos(delta_theta))
-                
-                # Sforzo puro (valore assoluto in radianti)
-                sforzo_rotazione = abs(delta_theta_norm)
-                
-                # --- 6. FUNZIONE DI COSTO TOTALE ---
-                # Sommiamo lo spazio geometrico e lo sforzo angolare pesato
                 costo_totale = dist_geometrica + (W_theta * sforzo_rotazione)
                 
-                # Aggiornamento basato sul costo minore
                 if costo_totale < best_cost:
                     best_cost = costo_totale
-                    best_state = [cand_x, cand_y, cand_theta]
+                    # Passiamo direttamente il target in coordinate RELATIVE
+                    best_peak = [p_x_rel, p_y_rel, p_azimuth]
 
-        return best_state
+        return best_peak
 
     def mpc_opt(self, target_trees, target_lambdas, obstacle_trees, closest_thresh, lb, ub, x0, steps=10):
         opti = ca.Opti()
@@ -385,12 +373,20 @@ class NeuralMPCHusky:
                 # Vettore differenza globale (Macchina - Centro Robot)
                 dX = obj_j_pos[0] - X[0, i+1]
                 dY = obj_j_pos[1] - X[1, i+1]
+                # DALLA macchina AL robot (posizione del robot relativa alla macchina)
+                dX, dY = -dX, -dY
+
                 dist_sq = dX**2 + dY**2 + 1e-6
                 distances_sq.append(dist_sq)
                 # Proiezione nel sistema di riferimento LOCALE del ROBOT
-                # Asse X del robot = avanti, Asse Y = sinistra
-                x_rel = dX * ca.cos(theta_fut) + dY * ca.sin(theta_fut)
-                y_rel = -dX * ca.sin(theta_fut) + dY * ca.cos(theta_fut)
+                # # Asse X del robot = avanti, Asse Y = sinistra
+                # x_rel = dX * ca.cos(theta_fut) + dY * ca.sin(theta_fut)
+                # y_rel = -dX * ca.sin(theta_fut) + dY * ca.cos(theta_fut)
+                # DALLA macchina AL robot (posizione del robot relativa alla macchina)
+                x_rel = dX * ca.cos(theta_target) + dY * ca.sin(theta_target)
+                y_rel = -dX * ca.sin(theta_target) + dY * ca.cos(theta_target)
+
+
                 # Calcolo Azimuth
                 theta_y_robot = theta_fut + (ca.pi / 2.0)
                 azimuth_raw = theta_y_robot - theta_target + ca.pi
@@ -401,16 +397,16 @@ class NeuralMPCHusky:
 
                 ### MASSIMI
                 # 1. Distanza quadratica dalla posizione del punto soglia ottimale (già presente)
-                dist_to_thresh_sq = (X[0, i+1] - OPT_THRESH_param[0])**2 + (X[1, i+1] - OPT_THRESH_param[1])**2
+                dist_to_thresh_sq = (x_rel - OPT_THRESH_param[0])**2 + (y_rel - OPT_THRESH_param[1])**2
                 # 2. Calcolo dell'errore di orientamento rispetto al punto soglia
                 # theta_fut è l'orientamento del robot al passo i+1, OPT_THRESH_param[2] è il theta desiderato
-                angle_diff_raw = OPT_THRESH_param[2] - theta_fut
+                angle_diff_raw = OPT_THRESH_param[2] - azimuth_norm
                 # Normalizzazione dell'errore angolare tra -pi e +pi usando CasADi
                 angle_diff_norm = ca.atan2(ca.sin(angle_diff_raw), ca.cos(angle_diff_raw))
                 angle_error_sq = angle_diff_norm**2
                 # 3. Pesi della funzione obiettivo (DA TARARE)
-                Q_thresh_pos = 5.0   # Peso di attrazione sulla posizione (X, Y)
-                Q_thresh_ori = 3.0   # Peso per l'orientamento (Theta). 
+                Q_thresh_pos = 2.0   # Peso di attrazione sulla posizione (X, Y)
+                Q_thresh_ori = 1.0   # Peso per l'orientamento (Theta). 
                 # 4. Aggiornamento della funzione obiettivo complessiva
                 obj = obj + Q_thresh_pos * dist_to_thresh_sq + Q_thresh_ori * angle_error_sq
 
@@ -463,7 +459,7 @@ class NeuralMPCHusky:
 
         modulated_side_cost = side_observation_cost * sigmoid_factor
 
-        opti.minimize(obj - 0.1*entropy_obj + 0*modulated_attraction_term + 0*modulated_side_cost)                                 
+        opti.minimize(obj - 1*entropy_obj + 0*modulated_attraction_term + 0*modulated_side_cost)                                 
         
         # options = {
         #     "ipopt": {

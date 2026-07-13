@@ -41,8 +41,8 @@ class CarScoresMock:
         # [X, Y, Theta_target]
         self.cars_pos = np.array([
             [-4.0, -1.0, 0.0],
-            [-4.0, 5.0, 0.0],
-            [-3.5, 10.0, 0.0],
+            # [-4.0, 5.0, 0.0],
+            # [-3.5, 10.0, 0.0],
             [4.0, 15.0, -np.pi]
         ], dtype=np.float32)
         
@@ -105,33 +105,52 @@ class CarScoresMock:
 
                 with torch.no_grad():
                     for i in range(self.num_cars):
+                        ######## Input terna robot
+                        # Coordinate e orientamento globale della macchina (Target)
+                        # X_t = self.cars_pos[i, 0]
+                        # Y_t = self.cars_pos[i, 1]
+                        # theta_t = self.cars_pos[i, 2] # Orientamento asse X della macchina in terna mondo
+                        # # Distanza globale tra macchina e centro del robot
+                        # dX = X_t - X_r
+                        # dY = Y_t - Y_r
+                        # # Trasformazione in terna robot
+                        # x_rel = dX * math.cos(theta_r) + dY * math.sin(theta_r)
+                        # y_rel = -dX * math.sin(theta_r) + dY * math.cos(theta_r)
+                        # # Calcolo azimut
+                        # theta_y_robot = theta_r + (math.pi / 2.0)
+                        # azimuth_raw = theta_y_robot - theta_t + math.pi
+                        # azimuth_norm = math.atan2(math.sin(azimuth_raw), math.cos(azimuth_raw))
+                        # # Input Rete Neurale
+                        # nn_input = torch.tensor([x_rel, y_rel, azimuth_norm], dtype=torch.float32).unsqueeze(0).to(self.device)
+                        # logit = self.models['car'](nn_input)
+                        # p_correct = logit.item()
+                        # rospy.loginfo(f"[Mock] Auto {i} | Terna Robot -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
+
+                        ######## Input terna macchina
                         # Coordinate e orientamento globale della macchina (Target)
                         X_t = self.cars_pos[i, 0]
                         Y_t = self.cars_pos[i, 1]
                         theta_t = self.cars_pos[i, 2] # Orientamento asse X della macchina in terna mondo
-                        # Distanza globale tra macchina e centro del robot
-                        dX = X_t - X_r
-                        dY = Y_t - Y_r
-                        # Trasformazione in terna robot
-                        x_rel = dX * math.cos(theta_r) + dY * math.sin(theta_r)
-                        y_rel = -dX * math.sin(theta_r) + dY * math.cos(theta_r)
-                        # Calcolo azimut
+                        # Vettore globale DALLA macchina AL robot (posizione del robot relativa alla macchina)
+                        dX = X_r - X_t
+                        dY = Y_r - Y_t
+                        # Trasformazione in terna MACCHINA (usando theta_t)
+                        x_rel = dX * math.cos(theta_t) + dY * math.sin(theta_t)
+                        y_rel = -dX * math.sin(theta_t) + dY * math.cos(theta_t)
+                        # Calcolo azimut (Attualmente invariato, vedi nota sotto)
                         theta_y_robot = theta_r + (math.pi / 2.0)
                         azimuth_raw = theta_y_robot - theta_t + math.pi
                         azimuth_norm = math.atan2(math.sin(azimuth_raw), math.cos(azimuth_raw))
-                        
                         # Input Rete Neurale
                         nn_input = torch.tensor([x_rel, y_rel, azimuth_norm], dtype=torch.float32).unsqueeze(0).to(self.device)
-                        
                         logit = self.models['car'](nn_input)
                         p_correct = logit.item()
-                        
-                        rospy.loginfo(f"[Mock] Auto {i} | Terna Robot -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
-            
-                        if p_correct > 0.81:
-                            scores[i, 0] = 1.0
-                        else:
-                            scores[i, 0] = 0.0
+                        rospy.loginfo(f"[Mock] Auto {i} | Terna Macchina -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
+
+                        # if p_correct > 0.81:
+                        #     scores[i, 0] = 1.0
+                        # else:
+                        #     scores[i, 0] = 0.0
             
             else:
                 rospy.logwarn_throttle(2.0, "[Mock] Nessun dato odometrico in arrivo.")

@@ -81,7 +81,9 @@ class NeuralMPCHusky:
         # ----------------------------------------------------------------------
         self.trees_pos = np.array([
             [-4.0, -1.0, 0.0],
-            [-4.0, -10.0, 0.0]
+            # [-4.0, 5.0, 0.0],
+            # [-3.5, 10.0, 0.0],
+            [4.0, 15.0, -np.pi]
         ], dtype=np.float32)
         
         # Identificativi reali stabili degli alberi (0: raw, 1: ripe)
@@ -304,12 +306,19 @@ class NeuralMPCHusky:
                 # Vettore differenza globale (Macchina - Centro Robot)
                 dX = obj_j_pos[0] - X[0, i+1]
                 dY = obj_j_pos[1] - X[1, i+1]
+                # DALLA macchina AL robot (posizione del robot relativa alla macchina)
+                dX, dY = -dX, -dY
+
                 dist_sq = dX**2 + dY**2 + 1e-6
                 distances_sq.append(dist_sq)
                 # Proiezione nel sistema di riferimento LOCALE del ROBOT
                 # Asse X del robot = avanti, Asse Y = sinistra
-                x_rel = dX * ca.cos(theta_fut) + dY * ca.sin(theta_fut)
-                y_rel = -dX * ca.sin(theta_fut) + dY * ca.cos(theta_fut)
+                # x_rel = dX * ca.cos(theta_fut) + dY * ca.sin(theta_fut)
+                # y_rel = -dX * ca.sin(theta_fut) + dY * ca.cos(theta_fut)
+                # DALLA macchina AL robot (posizione del robot relativa alla macchina)
+                x_rel = dX * ca.cos(theta_target) + dY * ca.sin(theta_target)
+                y_rel = -dX * ca.sin(theta_target) + dY * ca.cos(theta_target)
+
                 # Calcolo Azimuth
                 theta_y_robot = theta_fut + (ca.pi / 2.0)
                 azimuth_raw = theta_y_robot - theta_target + ca.pi

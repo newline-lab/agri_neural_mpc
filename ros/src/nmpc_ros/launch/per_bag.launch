@@ -1,0 +1,7 @@
+<launch>
+    <node pkg="nmpc_ros" type="GPSrtk_node.py" name="GPSrtk_node" output="screen" />
+
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+        <arg name="align_depth" value="true" />
+    </include>
+</launch>

@@ -285,55 +285,107 @@ class NeuralMPCHusky:
         return np.argsort(distances)[:self.NUM_OBSTACLE_TREES]
     
 
+    # def get_closest_threshold_state(self, robot_state, target_trees):
+    #     """
+    #     Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
+    #     Invece di lavorare nel frame globale, calcola lo stato relativo attuale del robot
+    #     e sceglie il picco più vicino nello spazio relativo (che coincide con l'input della rete).
+    #     """
+    #     rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
+    #     best_cost = float('inf')
+    #     best_peak = [0.0, 0.0, 0.0]
+    #     # W_theta pesa l'importanza della rotazione rispetto alla distanza.
+    #     W_theta = 1.2 
+    #     for tree in target_trees:
+    #         tx, ty, theta_target = tree[0], tree[1], tree[2]
+    #         # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
+    #         dX = rx - tx
+    #         dY = ry - ty
+    #         # Proiezione della posizione nel frame della macchina
+    #         curr_x_rel = dX * math.cos(theta_target) + dY * math.sin(theta_target)
+    #         curr_y_rel = -dX * math.sin(theta_target) + dY * math.cos(theta_target)
+    #         # Calcolo Azimut attuale (0 se asse y robot e asse x macchina si guardano)
+    #         curr_theta_y = rtheta + (math.pi / 2.0)
+    #         curr_azimuth_raw = curr_theta_y - theta_target + math.pi
+    #         curr_azimuth = math.atan2(math.sin(curr_azimuth_raw), math.cos(curr_azimuth_raw))
+    #         # --- 2. RICERCA DEL PICCO OTTIMO NELLO SPAZIO RELATIVO ---
+    #         for p in self.punti_soglia:
+    #             # p è [x_rel_opt, y_rel_opt, azimuth_opt] estratti dall'analisi della rete
+    #             p_x_rel, p_y_rel, p_azimuth = p[0], p[1], p[2]
+    #             # Distanza puramente nel piano relativo
+    #             dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
+    #             # Sforzo di rotazione sull'azimut
+    #             delta_azimuth = p_azimuth - curr_azimuth
+    #             delta_azimuth_norm = math.atan2(math.sin(delta_azimuth), math.cos(delta_azimuth))
+    #             sforzo_rotazione = abs(delta_azimuth_norm)
+    #             costo_totale = dist_geometrica + (W_theta * sforzo_rotazione)
+    #             if costo_totale < best_cost:
+    #                 best_cost = costo_totale
+    #                 # Passiamo direttamente il target in coordinate RELATIVE
+    #                 best_peak = [p_x_rel, p_y_rel, p_azimuth]
+    #     return best_peak
     def get_closest_threshold_state(self, robot_state, target_trees):
         """
         Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
-        Invece di lavorare nel frame globale, calcola lo stato relativo attuale del robot
-        e sceglie il picco più vicino nello spazio relativo (che coincide con l'input della rete).
+        SCARTA COMPLETAMENTE i punti che si trovano in zone non ammissibili.
         """
         rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
         best_cost = float('inf')
-        best_peak = [0.0, 0.0, 0.0]
-
-        # W_theta pesa l'importanza della rotazione rispetto alla distanza.
-        W_theta = 1.2 
-
+        best_peak = None
+        # Variabili di fallback nel caso limite in cui TUTTI i punti siano non ammissibili
+        fallback_cost = float('inf')
+        fallback_peak = [0.0, 0.0, 0.0]
+        W_theta = 0.5 
+        # --- PARAMETRO DI SICUREZZA (HARD CONSTRAINT) ---
+        SAFETY_MARGIN = 2.5 # Raggio di ingombro in metri. Modificalo in base alle dimensioni delle auto.
         for tree in target_trees:
             tx, ty, theta_target = tree[0], tree[1], tree[2]
-            
             # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
             dX = rx - tx
             dY = ry - ty
-            
-            # Proiezione della posizione nel frame della macchina
             curr_x_rel = dX * math.cos(theta_target) + dY * math.sin(theta_target)
             curr_y_rel = -dX * math.sin(theta_target) + dY * math.cos(theta_target)
-            
-            # Calcolo Azimut attuale (0 se asse y robot e asse x macchina si guardano)
             curr_theta_y = rtheta + (math.pi / 2.0)
             curr_azimuth_raw = curr_theta_y - theta_target + math.pi
             curr_azimuth = math.atan2(math.sin(curr_azimuth_raw), math.cos(curr_azimuth_raw))
-            
             # --- 2. RICERCA DEL PICCO OTTIMO NELLO SPAZIO RELATIVO ---
             for p in self.punti_soglia:
-                # p è [x_rel_opt, y_rel_opt, azimuth_opt] estratti dall'analisi della rete
                 p_x_rel, p_y_rel, p_azimuth = p[0], p[1], p[2]
-                
-                # Distanza puramente nel piano relativo
+                # Trasformazione inversa: Da Relativo a Globale
+                p_x_glob = tx + (p_x_rel * math.cos(theta_target)) - (p_y_rel * math.sin(theta_target))
+                p_y_glob = ty + (p_x_rel * math.sin(theta_target)) + (p_y_rel * math.cos(theta_target))
+                # --- CONTROLLO AMMISSIBILITÀ (HARD CONSTRAINT) ---
+                punto_ammissibile = True
+                for obs in self.trees_pos:
+                    # Ignoriamo il target corrente
+                    if math.hypot(obs[0] - tx, obs[1] - ty) < 0.1:
+                        continue
+                    # Se il punto globale è troppo vicino a un altro ostacolo, non è ammissibile
+                    if math.hypot(p_x_glob - obs[0], p_y_glob - obs[1]) < SAFETY_MARGIN:
+                        punto_ammissibile = False
+                        break # Inutile controllare gli altri ostacoli, il punto è già scartato
+                # Calcolo dei costi standard
                 dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
-                
-                # Sforzo di rotazione sull'azimut
                 delta_azimuth = p_azimuth - curr_azimuth
                 delta_azimuth_norm = math.atan2(math.sin(delta_azimuth), math.cos(delta_azimuth))
                 sforzo_rotazione = abs(delta_azimuth_norm)
-                
                 costo_totale = dist_geometrica + (W_theta * sforzo_rotazione)
-                
+                # Salviamo sempre il migliore in assoluto come fallback di emergenza
+                if costo_totale < fallback_cost:
+                    fallback_cost = costo_totale
+                    fallback_peak = [p_x_rel, p_y_rel, p_azimuth]
+                # SE IL PUNTO NON È AMMISSIBILE, LO SALTIAMO COMPLETAMENTE
+                if not punto_ammissibile:
+                    continue
+                # Se è ammissibile ed è il migliore finora, lo salviamo
                 if costo_totale < best_cost:
                     best_cost = costo_totale
-                    # Passiamo direttamente il target in coordinate RELATIVE
                     best_peak = [p_x_rel, p_y_rel, p_azimuth]
-
+        # Se il ciclo finisce e best_peak è ancora None, significa che TUTTI i punti
+        # erano dentro agli ostacoli. Usiamo il fallback per non far crashare l'MPC.
+        if best_peak is None:
+            rospy.logwarn("[get_closest_threshold_state] Tutti i punti ottimi sono occupati! Uso fallback.")
+            return fallback_peak
         return best_peak
 
     def mpc_opt(self, target_trees, target_lambdas, obstacle_trees, closest_thresh, lb, ub, x0, steps=10):
@@ -373,8 +425,8 @@ class NeuralMPCHusky:
         ca_batch = []
 
         for i in range(steps):
-            opti.subject_to(opti.bounded(lb[0] - 20.0, X[0, i], ub[0] + 20.0))
-            opti.subject_to(opti.bounded(lb[1] - 20.0, X[1, i], ub[1] + 20.0))
+            opti.subject_to(opti.bounded(lb[0] - 50.0, X[0, i], ub[0] + 50.0))
+            opti.subject_to(opti.bounded(lb[1] - 50.0, X[1, i], ub[1] + 50.0))
             opti.subject_to(opti.bounded(-2*np.pi, X[2, i], 2*np.pi))
 
             # Limiti di attuazione motori fisici del Clearpath Husky
@@ -384,6 +436,13 @@ class NeuralMPCHusky:
             opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))
 
             # Prevenzione delle collisioni
+            # for j in range(self.NUM_OBSTACLE_TREES):
+            #     obs_j_pos = OBSTACLE_TREES_param[:, j]
+            #     dist_sq_obs = ca.sumsqr(X[:2, i+1] - obs_j_pos[:2])
+            #     opti.subject_to(dist_sq_obs >= safe_distance**2)
+            # ------------------------------------------------------------------
+            # CONFIGURAZIONE INCOMBRO MACCHINA (Smooth Multi-Plane Hard Constraint)
+            # ------------------------------------------------------------------
             for j in range(self.NUM_OBSTACLE_TREES):
                 obs_j_pos = OBSTACLE_TREES_param[:, j]
                 dist_sq_obs = ca.sumsqr(X[:2, i+1] - obs_j_pos[:2])

@@ -12,6 +12,8 @@ from gazebo_msgs.srv import SpawnModel
 from geometry_msgs.msg import Pose, Point, Quaternion
 import threading
 from geometry_msgs.msg import Pose, Point, Quaternion, Pose2D
+from gazebo_msgs.srv import SetModelState
+from gazebo_msgs.msg import ModelState
 
 class MultiLayerPerceptron(torch.nn.Module):
     def __init__(self, input_dim, hidden_size=64, hidden_layers=3):
@@ -37,14 +39,20 @@ class MultiLayerPerceptron(torch.nn.Module):
 class CarScoresMock:
     def __init__(self):
         rospy.init_node('car_scores_mock_node', anonymous=True)
+
+        self.start_pos = [35.0, -8.0, 0.0]
         
         # [X, Y, Theta_target]
+        offset_x = 0
+        offset_y = 0
         self.cars_pos = np.array([
-            [-4.0, -1.0, 0.0],
-            # [-4.0, 5.0, 0.0],
-            # [-3.5, 10.0, 0.0],
-            [4.0, 15.0, -np.pi]
+          [43.04, -2.149, 1.4337],
+          [49.701, -7.093, -1.6995],
+          [52.743, -7.233, -1.7331],
         ], dtype=np.float32)
+        # calcolo offset
+        self.cars_pos[:, 0] += offset_x
+        self.cars_pos[:, 1] += offset_y
         
         self.gt_ids = [0, 0, 0, 0] # 1: Ripe (Verde), 0: Raw (Rossa)
         self.num_cars = len(self.cars_pos)
@@ -74,6 +82,7 @@ class CarScoresMock:
         rospy.loginfo("[+] Nodo Mock Auto-Percettivo avviato. In attesa di odometria...")
 
         # Spawn in Gazebo su un thread separato
+        self.set_robot_position(model_name="husky", x=self.start_pos[0], y=self.start_pos[1], yaw=self.start_pos[2])
         threading.Thread(target=self.spawn_cars_in_gazebo).start()
 
     def get_latest_best_model(self, cls=''):
@@ -147,10 +156,10 @@ class CarScoresMock:
                         p_correct = logit.item()
                         rospy.loginfo(f"[Mock] Auto {i} | Terna Macchina -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
 
-                        # if p_correct > 0.81:
-                        #     scores[i, 0] = 1.0
-                        # else:
-                        #     scores[i, 0] = 0.0
+                        if p_correct > 0.6:
+                            scores[i, 0] = 0.85
+                        else:
+                            scores[i, 0] = 0.0
             
             else:
                 rospy.logwarn_throttle(2.0, "[Mock] Nessun dato odometrico in arrivo.")
@@ -280,6 +289,36 @@ class CarScoresMock:
             
         except (rospy.ServiceException, rospy.ROSException) as e:
             rospy.logerr(f"[Mock] Impossibile spawnare le auto: {e}")
+
+
+    def set_robot_position(self, model_name, x, y, yaw, z=0.1):
+            rospy.loginfo(f"[Mock] Spostamento del robot '{model_name}' a X: {x}, Y: {y}...")
+            service_name = '/gazebo/set_model_state'
+            try:
+                rospy.wait_for_service(service_name, timeout=5.0)
+                set_state_client = rospy.ServiceProxy(service_name, SetModelState)
+                
+                # Crea lo stato del modello
+                state = ModelState()
+                state.model_name = model_name
+                state.reference_frame = "world"
+                
+                # Imposta posizione
+                state.pose.position = Point(x=x, y=y, z=z)
+                
+                # Imposta orientamento (Yaw) convertito in quaternione
+                q = tf.transformations.quaternion_from_euler(0.0, 0.0, yaw)
+                state.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+                
+                # Invia la richiesta a Gazebo
+                response = set_state_client(state)
+                if response.success:
+                    rospy.loginfo("[Mock] Robot posizionato con successo.")
+                else:
+                    rospy.logwarn(f"[Mock] Gazebo non ha potuto spostare il robot: {response.status_message}")
+                    
+            except (rospy.ServiceException, rospy.ROSException) as e:
+                rospy.logerr(f"[Mock] Errore durante il posizionamento del robot: {e}")
 
 if __name__ == '__main__':
     try:

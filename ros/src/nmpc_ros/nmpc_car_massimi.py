@@ -122,6 +122,26 @@ class NeuralMPCHusky:
             )
         print(self.trees_pos)
 
+        # All'interno di def __init__(self, run_dir=None):
+
+        # ----------------------------------------------------------------------
+        # COORDINATE PALI (x, y)
+        # ----------------------------------------------------------------------
+        self.poles_pos = np.array([
+            [47, -2],
+            [48, -2],
+        ], dtype=np.float32)
+        self.NUM_POLES = self.poles_pos.shape[0]
+        # ----------------------------------------------------------------------
+        # COORDINATE AIUOLE (x, y, lunghezza, larghezza, orientamento_rad)
+        # L'orientamento ti permette di ruotare la superellisse.
+        # [12.0, 10.0, 10.0, 2.0, 0.0], # Esempio: aiuola lunga 10m e larga 2m
+        # ----------------------------------------------------------------------
+        self.flowerbeds_pos = np.array([
+            [56, -3.5, 8.0, 1, -1.54],
+        ], dtype=np.float32)
+        self.NUM_FLOWERBEDS = self.flowerbeds_pos.shape[0]
+
         # Identificativi reali stabili degli alberi (0: raw, 1: ripe)
         self.trees_gt_id = np.array([0, 1], dtype=np.uint8)
         
@@ -324,10 +344,74 @@ class NeuralMPCHusky:
     #                 # Passiamo direttamente il target in coordinate RELATIVE
     #                 best_peak = [p_x_rel, p_y_rel, p_azimuth]
     #     return best_peak
+
+    # def get_closest_threshold_state(self, robot_state, target_trees):
+    #     """
+    #     Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
+    #     SCARTA COMPLETAMENTE i punti che si trovano in zone non ammissibili.
+    #     """
+    #     rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
+    #     best_cost = float('inf')
+    #     best_peak = None
+    #     # Variabili di fallback nel caso limite in cui TUTTI i punti siano non ammissibili
+    #     fallback_cost = float('inf')
+    #     fallback_peak = [0.0, 0.0, 0.0]
+    #     W_theta = 0.5 
+    #     # --- PARAMETRO DI SICUREZZA (HARD CONSTRAINT) ---
+    #     SAFETY_MARGIN = 2.5 # Raggio di ingombro in metri. Modificalo in base alle dimensioni delle auto.
+    #     for tree in target_trees:
+    #         tx, ty, theta_target = tree[0], tree[1], tree[2]
+    #         # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
+    #         dX = rx - tx
+    #         dY = ry - ty
+    #         curr_x_rel = dX * math.cos(theta_target) + dY * math.sin(theta_target)
+    #         curr_y_rel = -dX * math.sin(theta_target) + dY * math.cos(theta_target)
+    #         curr_theta_y = rtheta + (math.pi / 2.0)
+    #         curr_azimuth_raw = curr_theta_y - theta_target + math.pi
+    #         curr_azimuth = math.atan2(math.sin(curr_azimuth_raw), math.cos(curr_azimuth_raw))
+    #         # --- 2. RICERCA DEL PICCO OTTIMO NELLO SPAZIO RELATIVO ---
+    #         for p in self.punti_soglia:
+    #             p_x_rel, p_y_rel, p_azimuth = p[0], p[1], p[2]
+    #             # Trasformazione inversa: Da Relativo a Globale
+    #             p_x_glob = tx + (p_x_rel * math.cos(theta_target)) - (p_y_rel * math.sin(theta_target))
+    #             p_y_glob = ty + (p_x_rel * math.sin(theta_target)) + (p_y_rel * math.cos(theta_target))
+    #             # --- CONTROLLO AMMISSIBILITÀ (HARD CONSTRAINT) ---
+    #             punto_ammissibile = True
+    #             for obs in self.trees_pos:
+    #                 # Ignoriamo il target corrente
+    #                 if math.hypot(obs[0] - tx, obs[1] - ty) < 0.1:
+    #                     continue
+    #                 # Se il punto globale è troppo vicino a un altro ostacolo, non è ammissibile
+    #                 if math.hypot(p_x_glob - obs[0], p_y_glob - obs[1]) < SAFETY_MARGIN:
+    #                     punto_ammissibile = False
+    #                     break # Inutile controllare gli altri ostacoli, il punto è già scartato
+    #             # Calcolo dei costi standard
+    #             dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
+    #             delta_azimuth = p_azimuth - curr_azimuth
+    #             delta_azimuth_norm = math.atan2(math.sin(delta_azimuth), math.cos(delta_azimuth))
+    #             sforzo_rotazione = abs(delta_azimuth_norm)
+    #             costo_totale = dist_geometrica + (W_theta * sforzo_rotazione)
+    #             # Salviamo sempre il migliore in assoluto come fallback di emergenza
+    #             if costo_totale < fallback_cost:
+    #                 fallback_cost = costo_totale
+    #                 fallback_peak = [p_x_rel, p_y_rel, p_azimuth]
+    #             # SE IL PUNTO NON È AMMISSIBILE, LO SALTIAMO COMPLETAMENTE
+    #             if not punto_ammissibile:
+    #                 continue
+    #             # Se è ammissibile ed è il migliore finora, lo salviamo
+    #             if costo_totale < best_cost:
+    #                 best_cost = costo_totale
+    #                 best_peak = [p_x_rel, p_y_rel, p_azimuth]
+    #     # Se il ciclo finisce e best_peak è ancora None, significa che TUTTI i punti
+    #     # erano dentro agli ostacoli. Usiamo il fallback per non far crashare l'MPC.
+    #     if best_peak is None:
+    #         rospy.logwarn("[get_closest_threshold_state] Tutti i punti ottimi sono occupati! Uso fallback.")
+    #         return fallback_peak
+    #     return best_peak
     def get_closest_threshold_state(self, robot_state, target_trees):
         """
         Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
-        SCARTA COMPLETAMENTE i punti che si trovano in zone non ammissibili.
+        SCARTA COMPLETAMENTE i punti che si trovano in zone non ammissibili (auto, pali, aiuole).
         """
         rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
         best_cost = float('inf')
@@ -336,8 +420,10 @@ class NeuralMPCHusky:
         fallback_cost = float('inf')
         fallback_peak = [0.0, 0.0, 0.0]
         W_theta = 0.5 
-        # --- PARAMETRO DI SICUREZZA (HARD CONSTRAINT) ---
-        SAFETY_MARGIN = 2.5 # Raggio di ingombro in metri. Modificalo in base alle dimensioni delle auto.
+        # --- PARAMETRI DI SICUREZZA (HARD CONSTRAINTS GEOMETRICI) ---
+        SAFETY_MARGIN_CAR = 1.5    # Raggio di ingombro auto in metri
+        SAFETY_MARGIN_POLE = 1.5   # Raggio di ingombro palo
+        MARGIN_FLOWERBED = 1.5     # Margine extra per le aiuole
         for tree in target_trees:
             tx, ty, theta_target = tree[0], tree[1], tree[2]
             # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
@@ -354,16 +440,40 @@ class NeuralMPCHusky:
                 # Trasformazione inversa: Da Relativo a Globale
                 p_x_glob = tx + (p_x_rel * math.cos(theta_target)) - (p_y_rel * math.sin(theta_target))
                 p_y_glob = ty + (p_x_rel * math.sin(theta_target)) + (p_y_rel * math.cos(theta_target))
-                # --- CONTROLLO AMMISSIBILITÀ (HARD CONSTRAINT) ---
+                # --- CONTROLLO AMMISSIBILITÀ ---
                 punto_ammissibile = True
+                # A) Controllo collisione con le altre AUTO (trees_pos)
                 for obs in self.trees_pos:
-                    # Ignoriamo il target corrente
+                    # Ignoriamo il target corrente (l'auto che stiamo osservando)
                     if math.hypot(obs[0] - tx, obs[1] - ty) < 0.1:
                         continue
-                    # Se il punto globale è troppo vicino a un altro ostacolo, non è ammissibile
-                    if math.hypot(p_x_glob - obs[0], p_y_glob - obs[1]) < SAFETY_MARGIN:
+                    if math.hypot(p_x_glob - obs[0], p_y_glob - obs[1]) < SAFETY_MARGIN_CAR:
                         punto_ammissibile = False
-                        break # Inutile controllare gli altri ostacoli, il punto è già scartato
+                        break 
+                # B) Controllo collisione con i PALI
+                if punto_ammissibile and hasattr(self, 'poles_pos'):
+                    for pole in self.poles_pos:
+                        if math.hypot(p_x_glob - pole[0], p_y_glob - pole[1]) < SAFETY_MARGIN_POLE:
+                            punto_ammissibile = False
+                            break
+                # C) Controllo collisione con le AIUOLE (Superellisse)
+                if punto_ammissibile and hasattr(self, 'flowerbeds_pos'):
+                    for f in self.flowerbeds_pos:
+                        fx, fy, flen, fwid, ftheta = f[0], f[1], f[2], f[3], f[4]
+                        # Vettore distanza dal centro dell'aiuola
+                        dx_f = p_x_glob - fx
+                        dy_f = p_y_glob - fy
+                        # Proiezione del punto nel sistema di riferimento locale dell'aiuola
+                        x_rel_f = dx_f * math.cos(ftheta) + dy_f * math.sin(ftheta)
+                        y_rel_f = -dx_f * math.sin(ftheta) + dy_f * math.cos(ftheta)
+                        sigma_x_f = (flen / 2.0) + MARGIN_FLOWERBED
+                        sigma_y_f = (fwid / 2.0) + MARGIN_FLOWERBED
+                        # Calcolo della metrica superellittica (esponente 4 o 2)
+                        dist_norm_f = (x_rel_f / sigma_x_f)**4 + (y_rel_f / sigma_y_f)**4
+                        # Se il valore è <= 1.0, il punto è DENTRO o SUL BORDO dell'aiuola
+                        if dist_norm_f <= 1.0:
+                            punto_ammissibile = False
+                            break
                 # Calcolo dei costi standard
                 dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
                 delta_azimuth = p_azimuth - curr_azimuth
@@ -396,7 +506,7 @@ class NeuralMPCHusky:
         U = opti.variable(self.n_control, steps)
 
         # TARGET_TREES occupa 3 spazi (x, y, theta), L0 occupa 2 spazi, OBSTACLE occupa 3 spazi + 3 per attrazione
-        param_size = self.n_state + self.NUM_TARGET_TREES * 5 + self.NUM_OBSTACLE_TREES * 3 + 3
+        param_size = self.n_state + self.NUM_TARGET_TREES * 5 + self.NUM_OBSTACLE_TREES * 3 + 3 + (self.NUM_POLES * 2) + (self.NUM_FLOWERBEDS * 5)
         P0 = opti.parameter(param_size)
 
         p_idx = 0
@@ -408,8 +518,14 @@ class NeuralMPCHusky:
         # Cambia *2 in *3 per gli ostacoli
         OBSTACLE_TREES_param = P0[p_idx : p_idx + self.NUM_OBSTACLE_TREES*3].reshape((self.NUM_OBSTACLE_TREES, 3)).T        
         p_idx += self.NUM_OBSTACLE_TREES * 3
-        # AGGIUNGI QUESTE DUE RIGHE per estrarre il punto
+        # massimi
         OPT_THRESH_param = P0[p_idx : p_idx + 3]
+        p_idx += 3
+        POLES_param = P0[p_idx : p_idx + self.NUM_POLES*2].reshape((self.NUM_POLES, 2)).T 
+        p_idx += self.NUM_POLES * 2
+        FLOWERBEDS_param = P0[p_idx : p_idx + self.NUM_FLOWERBEDS*5].reshape((self.NUM_FLOWERBEDS, 5)).T 
+        p_idx += self.NUM_FLOWERBEDS * 5
+
         lambda_evol = [L0]
 
         # Configurazione pesi della funzione di costo dell'MPC
@@ -434,6 +550,64 @@ class NeuralMPCHusky:
             opti.subject_to(opti.bounded(-1.0, U[1, i], 1.0))       # Velocità angolare massima omega (rad/s)
             
             opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))
+
+            # ---------------------------------------------------------
+            # EVITAMENTO PALI (Potenziale "Hard" Orientato)
+            # ---------------------------------------------------------
+            # Dimensioni approssimative del Clearpath Husky (in metri)
+            robot_length = 1.0 
+            robot_width = 0.67 
+            margin_pole = 0.8 
+            # Parametri del potenziale rigido (Muro Esponenziale)
+            Q_pole_hard = 100.0   # Costo base altissimo al confine dell'ostacolo
+            alpha_pole = 10.0      # Ripidezza estrema. Più è alto, più il "muro" è verticale
+            for p in range(self.NUM_POLES):
+                px, py = POLES_param[0, p], POLES_param[1, p]
+                # 1. Distanza globale
+                dx_p = px - X[0, i+1]
+                dy_p = py - X[1, i+1]
+                theta_rob = X[2, i+1]
+                # 2. Proiezione del PALO nel sistema locale del ROBOT
+                x_rel_p = dx_p * ca.cos(theta_rob) + dy_p * ca.sin(theta_rob)
+                y_rel_p = -dx_p * ca.sin(theta_rob) + dy_p * ca.cos(theta_rob)
+                # 3. Semiassi dell'area di ingombro
+                sigma_x_rob = (robot_length / 2.0) + margin_pole
+                sigma_y_rob = (robot_width / 2.0) + margin_pole
+                # 4. Metrica di distanza ellittica (1.0 = bordo esatto del margine)
+                dist_norm_p = (x_rel_p / sigma_x_rob)**2 + (y_rel_p / sigma_y_rob)**2
+                # 5. Potenziale Hard: ca.exp( alpha * (1 - distanza) )
+                # - Se dist_norm_p = 1.0 (sul bordo), il costo è Q_pole_hard
+                # - Se dist_norm_p < 1.0 (dentro), il costo esplode istantaneamente (es. exp(5) * 5000)
+                # - Se dist_norm_p > 1.0 (fuori), il costo decade a zero quasi subito (nessuna interferenza)
+                hard_potential_pole = Q_pole_hard * ca.exp(alpha_pole * (1.0 - dist_norm_p))
+                # Aggiungiamo il costo all'obiettivo
+                obj = obj + hard_potential_pole
+            # ---------------------------------------------------------
+            # EVITAMENTO AIUOLE (Soft Constraint Superellisse)
+            # ---------------------------------------------------------
+            margin_f = 1  
+            Q_flowerbed = 100.0 # Peso della repulsione dell'aiuola
+            for f in range(self.NUM_FLOWERBEDS):
+                fx = FLOWERBEDS_param[0, f]
+                fy = FLOWERBEDS_param[1, f]
+                flen = FLOWERBEDS_param[2, f]
+                fwid = FLOWERBEDS_param[3, f]
+                ftheta = FLOWERBEDS_param[4, f]
+                dx_f = X[0, i+1] - fx
+                dy_f = X[1, i+1] - fy
+                # Proiezione nel sistema di riferimento dell'aiuola
+                x_rel_f = dx_f * ca.cos(ftheta) + dy_f * ca.sin(ftheta)
+                y_rel_f = -dx_f * ca.sin(ftheta) + dy_f * ca.cos(ftheta)
+                sigma_x_f = (flen / 2.0) + margin_f
+                sigma_y_f = (fwid / 2.0) + margin_f
+                # Suggerimento: passa all'esponente 2 (ellisse standard) per una stabilità ancora maggiore, 
+                # ma se vuoi mantenere la forma più rettangolare della superellisse (esponente 4), 
+                # con ca.exp() ora non crasherà più.
+                dist_norm_f = (x_rel_f / sigma_x_f)**4 + (y_rel_f / sigma_y_f)**4
+                # Applichiamo l'esponenziale inverso
+                repulsive_flowerbed = Q_flowerbed * ca.exp(-dist_norm_f * 1.0)
+                # Sommiamo alla funzione obiettivo INVECE di usare subject_to
+                obj = obj + repulsive_flowerbed
 
             # Prevenzione delle collisioni
             # for j in range(self.NUM_OBSTACLE_TREES):
@@ -551,8 +725,8 @@ class NeuralMPCHusky:
                 angle_diff_norm = ca.atan2(ca.sin(angle_diff_raw), ca.cos(angle_diff_raw))
                 angle_error_sq = angle_diff_norm**2
                 # 3. Pesi della funzione obiettivo (DA TARARE)
-                Q_thresh_pos = 2.0   # Peso di attrazione sulla posizione (X, Y)
-                Q_thresh_ori = 1.0   # Peso per l'orientamento (Theta). 
+                Q_thresh_pos = 3.0   # Peso di attrazione sulla posizione (X, Y)
+                Q_thresh_ori = 2.0   # Peso per l'orientamento (Theta). 
                 # 4. Aggiornamento della funzione obiettivo complessiva
                 obj = obj + Q_thresh_pos * dist_to_thresh_sq + Q_thresh_ori * angle_error_sq
 
@@ -638,9 +812,14 @@ class NeuralMPCHusky:
             ca.reshape(target_trees, 3 * self.NUM_TARGET_TREES, 1),
             ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
             ca.reshape(obstacle_trees, 3 * self.NUM_OBSTACLE_TREES, 1),
-            ca.DM(closest_thresh)
+            ca.DM(closest_thresh),
+            ca.reshape(self.poles_pos, 2 * self.NUM_POLES, 1),           # <-- NUOVO
+            ca.reshape(self.flowerbeds_pos, 5 * self.NUM_FLOWERBEDS, 1)  # <-- NUOVO
         )
         opti.set_value(P0, p0_val)
+
+        opti.set_initial(X, ca.repmat(x0, 1, steps + 1))
+        opti.set_initial(U, ca.DM.zeros(self.n_control, steps))
 
         sol = opti.solve()
         mpc_step_func = opti.to_function("mpc_step", inputs, outputs, ["p", "x_init", "x_lam"], ["u_opt", "x_pred", "x_opt", "lam_opt"])
@@ -719,7 +898,9 @@ class NeuralMPCHusky:
                             ca.reshape(target_trees_subset, 3 * self.NUM_TARGET_TREES, 1),
                             ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
                             ca.reshape(obstacle_trees_subset, 3 * self.NUM_OBSTACLE_TREES, 1),
-                            ca.DM(closest_thresh_state) # <--- AGGIUNGI IN CODA
+                            ca.DM(closest_thresh_state),
+                            ca.reshape(self.poles_pos, 2 * self.NUM_POLES, 1),           # <-- NUOVO
+                            ca.reshape(self.flowerbeds_pos, 5 * self.NUM_FLOWERBEDS, 1)  # <-- NUOVO
                         )
                         u, x_traj, x_dec_prev, lam_g_prev = mpc_step(P0_val, x_dec_prev, lam_g_prev)
                     step_duration = time.time() - step_start_time

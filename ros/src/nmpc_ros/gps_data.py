@@ -4,11 +4,18 @@ import rospy
 from gazebo_msgs.msg import ModelStates
 from geometry_msgs.msg import Pose2D
 import tf.transformations
+import random
 
 class FakeRTKGps:
     def __init__(self):
         # Inizializza il nodo ROS
         rospy.init_node('fake_rtk_gps_node', anonymous=True)
+
+        # --- PARAMETRI DEL RUMORE GAUSSIANO ---
+        # Deviazione standard per X e Y in metri (es: 0.02 = 2 cm)
+        self.noise_std_pos = rospy.get_param('~noise_std_pos', 0.02) 
+        # Deviazione standard per l'angolo in radianti
+        self.noise_std_yaw = rospy.get_param('~noise_std_yaw', 0.01)
 
         # Nome del modello su Gazebo (di default 'husky', ma puoi cambiarlo)
         self.robot_model_name = rospy.get_param('~robot_name', 'husky') 
@@ -50,9 +57,9 @@ class FakeRTKGps:
 
             # 3. Costruisci il messaggio e pubblicalo
             gps_msg = Pose2D()
-            gps_msg.x = x
-            gps_msg.y = y
-            gps_msg.theta = yaw
+            gps_msg.x = x + random.gauss(0.0, self.noise_std_pos)
+            gps_msg.y = y + random.gauss(0.0, self.noise_std_pos)
+            gps_msg.theta = yaw + random.gauss(0.0, self.noise_std_yaw)
 
             self.gps_pub.publish(gps_msg)
 

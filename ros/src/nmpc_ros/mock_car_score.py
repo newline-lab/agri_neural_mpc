@@ -42,7 +42,7 @@ class CarScoresMock:
 
         # self.start_pos = [35.0, -8.0, 0.0]
         # self.start_pos = [38.0, 2.0, 0.0]
-        self.start_pos = [58.0, -10, 0.0]
+        self.start_pos = [60.0, -4, 0.0]
         
         # [X, Y, Theta_target]
         offset_x = 0
@@ -58,6 +58,22 @@ class CarScoresMock:
         
         self.gt_ids = [0, 0, 0, 0] # 1: Ripe (Verde), 0: Raw (Rossa)
         self.num_cars = len(self.cars_pos)
+
+        # ----------------------------------------------------------------------
+        # COORDINATE PALI (x, y)
+        # ----------------------------------------------------------------------
+        self.poles_pos = np.array([
+            [47, -2],
+            [48, -2],
+        ], dtype=np.float32)
+        # ----------------------------------------------------------------------
+        # COORDINATE AIUOLE (x, y, lunghezza, larghezza, orientamento_rad)
+        # ----------------------------------------------------------------------
+        self.flowerbeds_pos = np.array([
+            [56, -3.5, 8.0, 1, -1.54],
+        ], dtype=np.float32)
+
+
         
         self.robot_pos = None
         self.robot_yaw = 0.0
@@ -86,6 +102,8 @@ class CarScoresMock:
         # Spawn in Gazebo su un thread separato
         self.set_robot_position(model_name="husky", x=self.start_pos[0], y=self.start_pos[1], yaw=self.start_pos[2])
         threading.Thread(target=self.spawn_cars_in_gazebo).start()
+        threading.Thread(target=self.spawn_obstacles_in_gazebo).start() 
+
 
     def get_latest_best_model(self, cls=''):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -158,8 +176,8 @@ class CarScoresMock:
                         p_correct = logit.item()
                         rospy.loginfo(f"[Mock] Auto {i} | Terna Macchina -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
 
-                        if p_correct > 0.6:
-                            scores[i, 0] = 0.85
+                        if p_correct > 0.58:
+                            scores[i, 0] = 1
                         else:
                             scores[i, 0] = 0.0
             
@@ -321,6 +339,98 @@ class CarScoresMock:
                     
             except (rospy.ServiceException, rospy.ROSException) as e:
                 rospy.logerr(f"[Mock] Errore durante il posizionamento del robot: {e}")
+
+    def spawn_obstacles_in_gazebo(self):
+        rospy.loginfo("[Mock] In attesa del servizio di spawn per gli ostacoli...")
+        service_name = '/gazebo/spawn_sdf_model'
+        try:
+            rospy.wait_for_service(service_name, timeout=10.0)
+            spawn_model_client = rospy.ServiceProxy(service_name, SpawnModel)
+            
+            # --- SPAWN PALI (Cilindri) ---
+            pole_radius = 0.2
+            pole_height = 2.0
+            
+            for i, pos in enumerate(self.poles_pos):
+                model_name = f"mock_pole_{i}"
+                sdf_pole = f"""
+                <sdf version='1.6'>
+                  <model name='{model_name}'>
+                    <static>true</static>
+                    <link name='link'>
+                      <collision name='collision'>
+                        <pose>0 0 {pole_height/2.0} 0 0 0</pose>
+                        <geometry><cylinder><radius>{pole_radius}</radius><length>{pole_height}</length></cylinder></geometry>
+                      </collision>
+                      <visual name='visual'>
+                        <pose>0 0 {pole_height/2.0} 0 0 0</pose>
+                        <geometry><cylinder><radius>{pole_radius}</radius><length>{pole_height}</length></cylinder></geometry>
+                        <material>
+                          <ambient>0.4 0.4 0.4 1</ambient> <diffuse>0.4 0.4 0.4 1</diffuse>
+                        </material>
+                      </visual>
+                    </link>
+                  </model>
+                </sdf>
+                """
+                pose = Pose()
+                pose.position = Point(x=pos[0], y=pos[1], z=0.0)
+                pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+                
+                spawn_model_client(
+                    model_name=model_name,
+                    model_xml=sdf_pole,
+                    robot_namespace="",
+                    initial_pose=pose,
+                    reference_frame="world"
+                )
+            rospy.loginfo("[Mock] Pali posizionati in Gazebo.")
+
+            # --- SPAWN AIUOLE (Box) ---
+            flowerbed_height = 0.3  # Altezza visiva dell'aiuola
+            
+            for i, fb in enumerate(self.flowerbeds_pos):
+                model_name = f"mock_flowerbed_{i}"
+                flen, fwid, fyaw = fb[2], fb[3], fb[4]
+                
+                sdf_flowerbed = f"""
+                <sdf version='1.6'>
+                  <model name='{model_name}'>
+                    <static>true</static>
+                    <link name='link'>
+                      <collision name='collision'>
+                        <pose>0 0 {flowerbed_height/2.0} 0 0 0</pose>
+                        <geometry><box><size>{flen} {fwid} {flowerbed_height}</size></box></geometry>
+                      </collision>
+                      <visual name='visual'>
+                        <pose>0 0 {flowerbed_height/2.0} 0 0 0</pose>
+                        <geometry><box><size>{flen} {fwid} {flowerbed_height}</size></box></geometry>
+                        <material>
+                          <ambient>0.2 0.6 0.2 1</ambient> <diffuse>0.2 0.6 0.2 1</diffuse>
+                        </material>
+                      </visual>
+                    </link>
+                  </model>
+                </sdf>
+                """
+                pose = Pose()
+                pose.position = Point(x=fb[0], y=fb[1], z=0.0)
+                
+                # Conversione orientamento aiuola in quaternione
+                q = tf.transformations.quaternion_from_euler(0.0, 0.0, fyaw)
+                pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+                
+                spawn_model_client(
+                    model_name=model_name,
+                    model_xml=sdf_flowerbed,
+                    robot_namespace="",
+                    initial_pose=pose,
+                    reference_frame="world"
+                )
+            rospy.loginfo("[Mock] Aiuole posizionate in Gazebo con l'orientamento corretto.")
+            
+        except (rospy.ServiceException, rospy.ROSException) as e:
+            rospy.logerr(f"[Mock] Impossibile spawnare gli ostacoli statici: {e}")
 
 if __name__ == '__main__':
     try:

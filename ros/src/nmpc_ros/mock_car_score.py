@@ -40,7 +40,9 @@ class CarScoresMock:
     def __init__(self):
         rospy.init_node('car_scores_mock_node', anonymous=True)
 
-        self.start_pos = [35.0, -8.0, 0.0]
+        # self.start_pos = [35.0, -8.0, 0.0]
+        # self.start_pos = [38.0, 2.0, 0.0]
+        self.start_pos = [58.0, -10, 0.0]
         
         # [X, Y, Theta_target]
         offset_x = 0

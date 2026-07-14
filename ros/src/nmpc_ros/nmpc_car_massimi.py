@@ -441,12 +441,71 @@ class NeuralMPCHusky:
             #     dist_sq_obs = ca.sumsqr(X[:2, i+1] - obs_j_pos[:2])
             #     opti.subject_to(dist_sq_obs >= safe_distance**2)
             # ------------------------------------------------------------------
-            # CONFIGURAZIONE INCOMBRO MACCHINA (Smooth Multi-Plane Hard Constraint)
+            # EVITAMENTO OSTACOLI AVANZATO (Repulsione + Circumnavigazione Tangenziale)
             # ------------------------------------------------------------------
+            # Dimensioni dell'auto
+            car_length = 3.46 
+            car_width = 1.62   
+            # Intensità della forza repulsiva
+            A_rep = 0.1     
+            # Margini di sicurezza per l'APF (non sono hard constraints)
+            margin_x = 1    
+            margin_y = 1                
+            # Parametri della circumnavigazione tangenziale (forza scivolante)
+            # Questo peso controlla quanto aggressivamente il robot sterza per circumnavigare
+            Q_circ_ori = 200.0 # Regola questo parametro per ottenere la manovra fluida
+            # Direzione della circumnavigazione rispetto al diagramma di `untitled.png`
+            # 1 per circumnavigare a destra dell'auto (per chi la guarda dall'alto)
+            # -1 per circumnavigare a sinistra dell'auto
+            direction_of_circ = 1 
             for j in range(self.NUM_OBSTACLE_TREES):
                 obs_j_pos = OBSTACLE_TREES_param[:, j]
-                dist_sq_obs = ca.sumsqr(X[:2, i+1] - obs_j_pos[:2])
-                opti.subject_to(dist_sq_obs >= safe_distance**2)
+                car_x, car_y, car_theta = obs_j_pos[0], obs_j_pos[1], obs_j_pos[2]
+                # Centro dell'auto (traslato indietro di L/2 rispetto alla punta del muso)
+                center_x = car_x - (car_length / 2.0) * ca.cos(car_theta)
+                center_y = car_y - (car_length / 2.0) * ca.sin(car_theta)
+                dx = X[0, i+1] - center_x
+                dy = X[1, i+1] - center_y
+                # Proiezione nel sistema locale dell'auto
+                x_rel = dx * ca.cos(car_theta) + dy * ca.sin(car_theta)
+                y_rel = -dx * ca.sin(car_theta) + dy * ca.cos(car_theta)
+                sigma_x = (car_length / 2.0) + margin_x
+                sigma_y = (car_width / 2.0) + margin_y
+                # SUPERELLISSE per coprire gli spigoli
+                dist_norm = (x_rel / sigma_x)**4 + (y_rel / sigma_y)**4
+                # Soft Constraint 1: Campo Potenziale Repulsivo
+                repulsive_cost = A_rep * dist_norm
+                # --- INIZIO CIRCUMNAVIGAZIONE ---
+                # --- 1. Calcolo dell'orientamento tangenziale desiderato ---
+                # Vettore radiale locale
+                v_radial = ca.vcat([x_rel, y_rel])
+                u_radial = v_radial / (ca.norm_2(v_radial) + 1e-6) # Evita divisione per zero
+                # Vettore tangenziale locale (ruotato)
+                # Verifica: se ry=0, rx=1 (davanti all'auto), u_tangential = [0, 1] 
+                # (in su nel diagramma, quindi a destra dell'auto). Corretto.
+                if direction_of_circ == 1:
+                    u_tangential = ca.vcat([-u_radial[1], u_radial[0]])
+                else:
+                    u_tangential = ca.vcat([u_radial[1], -u_radial[0]])
+                # Angolo tangenziale desiderato nel sistema locale dell'auto
+                angle_tangential_ref_car_frame = ca.atan2(u_tangential[1], u_tangential[0])
+                # --- 2. Allineamento dell'orientamento del robot ---
+                # Orientamento attuale nel sistema locale dell'auto
+                theta_fut = X[2, i+1]
+                theta_fut_car_frame = theta_fut - car_theta
+                # Differenza di orientamento (normalizzata)
+                angle_diff = angle_tangential_ref_car_frame - theta_fut_car_frame
+                angle_diff_norm = ca.atan2(ca.sin(angle_diff), ca.cos(angle_diff))
+                # Soft Constraint 2: Costo di circumnavigazione tangenziale
+                # Questo termine "penalizza" il robot se non si allinea tangenzialmente all'ostacolo.
+                # È forte solo quando il robot è vicino all'auto.
+                cost_circ = Q_circ_ori * ca.exp(-dist_norm) #* angle_diff_norm**2
+                # --- FINE CODICE CIRCUMNAVIGAZIONE ---
+                # Aggiunta dei costi al costo globale
+                obj = obj + repulsive_cost + cost_circ
+                # Hard Constraint di sicurezza assoluta (80% della superellisse)
+                core_safety = 0.8  
+                opti.subject_to( dist_norm >= core_safety**4 )
 
 
             theta_fut = X[2, i+1]  # Orientamento futuro del ROBOT (asse X)
@@ -607,114 +666,123 @@ class NeuralMPCHusky:
         total_commands = 0
         prev_x, prev_y = float(x_k[0]), float(x_k[1])
 
-        sim_time = 1200
+        sim_time = 120000
         mpciter = 0
         rate = rospy.Rate(int(1/self.dt))
         warm_start = True
         x_dec_prev, lam_g_prev, mpc_step = None, None, None
 
-        while mpciter < sim_time and not rospy.is_shutdown():
-            loop_iter_start = time.time()
-            rospy.loginfo('Control Loop Step: %d', mpciter)
-            
-            state_now = self.current_state
-            current_sim_time = time.time() - sim_start_time
-            pose_history.append(state_now)
-            time_history.append(current_sim_time)
-            x_k = ca.DM(state_now)
+        try:
+            while mpciter < sim_time and not rospy.is_shutdown():
+                loop_iter_start = time.time()
+                rospy.loginfo('Control Loop Step: %d', mpciter)
+                
+                state_now = self.current_state
+                current_sim_time = time.time() - sim_start_time
+                pose_history.append(state_now)
+                time_history.append(current_sim_time)
+                x_k = ca.DM(state_now)
 
-            # Sincronizzazione bloccante per attendere i dati dei classificatori visivi degli alberi
-            while self.latest_trees_scores is None and not rospy.is_shutdown():
-                rospy.sleep(0.01)
-            
-            scores = self.latest_trees_scores.copy()
-            if mpciter % 2 == 0: 
-                self.beliefs_k = self.bayes(self.beliefs_k, ca.DM(scores))
+                # Sincronizzazione bloccante per attendere i dati dei classificatori visivi degli alberi
+                while self.latest_trees_scores is None and not rospy.is_shutdown():
+                    rospy.sleep(0.01)
+                
+                scores = self.latest_trees_scores.copy()
+                if mpciter % 2 == 0: 
+                    self.beliefs_k = self.bayes(self.beliefs_k, ca.DM(scores))
 
-            # Invio dei marker geometrici per la visualizzazione grafica (Rviz)
-            tree_markers_msg = create_tree_markers(self.trees_pos, self.beliefs_k.full())
-            self.tree_markers_pub.publish(tree_markers_msg)
-            
-            robot_position_xy = np.array(state_now[:2])
-            target_indices = self.get_target_tree_indices(robot_position_xy, num_target=self.NUM_TARGET_TREES)
-            obstacle_indices = self.get_nearest_tree_indices(robot_position_xy, num_obstacle=self.NUM_OBSTACLE_TREES)
+                # Invio dei marker geometrici per la visualizzazione grafica (Rviz)
+                tree_markers_msg = create_tree_markers(self.trees_pos, self.beliefs_k.full())
+                self.tree_markers_pub.publish(tree_markers_msg)
+                
+                robot_position_xy = np.array(state_now[:2])
+                target_indices = self.get_target_tree_indices(robot_position_xy, num_target=self.NUM_TARGET_TREES)
+                obstacle_indices = self.get_nearest_tree_indices(robot_position_xy, num_obstacle=self.NUM_OBSTACLE_TREES)
 
-            target_trees_subset = self.trees_pos[target_indices]
-            obstacle_trees_subset = self.trees_pos[obstacle_indices]
-            target_lambdas = self.beliefs_k[target_indices, :]
+                target_trees_subset = self.trees_pos[target_indices]
+                obstacle_trees_subset = self.trees_pos[obstacle_indices]
+                target_lambdas = self.beliefs_k[target_indices, :]
 
-            closest_thresh_state = self.get_closest_threshold_state(state_now, target_trees_subset)
+                closest_thresh_state = self.get_closest_threshold_state(state_now, target_trees_subset)
 
-            step_start_time = time.time()
-            try:
-                if warm_start or mpc_step is None:
-                    # AGGIUNGI closest_thresh_state AI PARAMETRI
-                    mpc_step, u, x_traj, x_dec_prev, lam_g_prev = self.mpc_opt(
-                        target_trees_subset, target_lambdas, obstacle_trees_subset, closest_thresh_state, lb, ub, x_k, steps=self.N
-                    )
-                    warm_start = False
+                step_start_time = time.time()
+                try:
+                    if warm_start or mpc_step is None:
+                        # AGGIUNGI closest_thresh_state AI PARAMETRI
+                        mpc_step, u, x_traj, x_dec_prev, lam_g_prev = self.mpc_opt(
+                            target_trees_subset, target_lambdas, obstacle_trees_subset, closest_thresh_state, lb, ub, x_k, steps=self.N
+                        )
+                        warm_start = False
+                    else:
+                        P0_val = ca.vertcat(
+                            x_k,
+                            ca.reshape(target_trees_subset, 3 * self.NUM_TARGET_TREES, 1),
+                            ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
+                            ca.reshape(obstacle_trees_subset, 3 * self.NUM_OBSTACLE_TREES, 1),
+                            ca.DM(closest_thresh_state) # <--- AGGIUNGI IN CODA
+                        )
+                        u, x_traj, x_dec_prev, lam_g_prev = mpc_step(P0_val, x_dec_prev, lam_g_prev)
+                    step_duration = time.time() - step_start_time
+                    durations.append(step_duration)
+
+                except Exception as e:
+                    rospy.logerr(f"Eccezione fatale durante la risoluzione MPC al ciclo {mpciter}: {e}")
+                    # Mandiamo un comando di stop immediato per sicurezza se fallisce il solutore
+                    self.cmd_vel_pub.publish(Twist())
+                    return
+
+                v_cmd = float(u[0])
+                omega_cmd = float(u[1])
+
+                # INVIO COMANDI CINEMATICI DIRETTAMENTE ALL'HUSKY
+                twist_msg = Twist()
+                twist_msg.linear.x = v_cmd
+                twist_msg.angular.z = omega_cmd
+                self.cmd_vel_pub.publish(twist_msg)
+
+                # Pubblicazione del cammino pianificato predittivo
+                predicted_path_msg = create_path_from_mpc_prediction(x_traj[:self.nx, 1:])
+                self.pred_path_pub.publish(predicted_path_msg)
+
+                velocity_command_log.append([current_sim_time, "MPC", v_cmd, omega_cmd])
+                total_commands += 1
+
+                curr_x, curr_y = float(x_traj[0, 1]), float(x_traj[1, 1])
+                total_distance += math.sqrt((curr_x - prev_x)**2 + (curr_y - prev_y)**2)
+                prev_x, prev_y = curr_x, curr_y
+
+                entropy_k = self.entropy_entire_field(self.beliefs_k)
+                lambda_history.append(self.beliefs_k.full().flatten().tolist())
+                entropy_history.append(ca.sum1(entropy_k).full().flatten()[0])
+                all_trajectories.append(x_traj[:self.nx, :].full())
+
+                mpciter += 1
+                rospy.loginfo("Entropia globale del sistema: %s", entropy_history[-1])
+                
+                if all(v <= self.threshold_entropy for v in entropy_k.full().flatten()):
+                    rospy.loginfo("Target informativo di riduzione entropia completato.")
+                    # break
+
+                loop_elapsed = time.time() - loop_iter_start
+                sleep_time = self.dt - loop_elapsed
+                if sleep_time > 0:
+                    rate.sleep()
                 else:
-                    P0_val = ca.vertcat(
-                        x_k,
-                        ca.reshape(target_trees_subset, 3 * self.NUM_TARGET_TREES, 1),
-                        ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
-                        ca.reshape(obstacle_trees_subset, 3 * self.NUM_OBSTACLE_TREES, 1),
-                        ca.DM(closest_thresh_state) # <--- AGGIUNGI IN CODA
-                    )
-                    u, x_traj, x_dec_prev, lam_g_prev = mpc_step(P0_val, x_dec_prev, lam_g_prev)
-                step_duration = time.time() - step_start_time
-                durations.append(step_duration)
+                    rospy.logwarn(f"Frequenza di ciclo violata! L'ottimizzazione ha impiegato {loop_elapsed:.4f}s rispetto al limite di {self.dt}s")
 
-            except Exception as e:
-                rospy.logerr(f"Eccezione fatale durante la risoluzione MPC al ciclo {mpciter}: {e}")
-                # Mandiamo un comando di stop immediato per sicurezza se fallisce il solutore
-                self.cmd_vel_pub.publish(Twist())
-                return
+            # Arresto di sicurezza assoluto a fine loop
+            self.cmd_vel_pub.publish(Twist())
 
-            v_cmd = float(u[0])
-            omega_cmd = float(u[1])
+        except rospy.ROSInterruptException:
+            rospy.loginfo("Rilevato Ctrl+C. Interruzione del loop e avvio del salvataggio dati.")
+        
+        finally:
+            rospy.loginfo("Arresto del robot e salvataggio in formato CSV...")
+            # Arresto di sicurezza assoluto a fine loop
+            self.cmd_vel_pub.publish(Twist())
 
-            # INVIO COMANDI CINEMATICI DIRETTAMENTE ALL'HUSKY
-            twist_msg = Twist()
-            twist_msg.linear.x = v_cmd
-            twist_msg.angular.z = omega_cmd
-            self.cmd_vel_pub.publish(twist_msg)
-
-            # Pubblicazione del cammino pianificato predittivo
-            predicted_path_msg = create_path_from_mpc_prediction(x_traj[:self.nx, 1:])
-            self.pred_path_pub.publish(predicted_path_msg)
-
-            velocity_command_log.append([current_sim_time, "MPC", v_cmd, omega_cmd])
-            total_commands += 1
-
-            curr_x, curr_y = float(x_traj[0, 1]), float(x_traj[1, 1])
-            total_distance += math.sqrt((curr_x - prev_x)**2 + (curr_y - prev_y)**2)
-            prev_x, prev_y = curr_x, curr_y
-
-            entropy_k = self.entropy_entire_field(self.beliefs_k)
-            lambda_history.append(self.beliefs_k.full().flatten().tolist())
-            entropy_history.append(ca.sum1(entropy_k).full().flatten()[0])
-            all_trajectories.append(x_traj[:self.nx, :].full())
-
-            mpciter += 1
-            rospy.loginfo("Entropia globale del sistema: %s", entropy_history[-1])
-            
-            if all(v <= self.threshold_entropy for v in entropy_k.full().flatten()):
-                rospy.loginfo("Target informativo di riduzione entropia completato.")
-                # break
-
-            loop_elapsed = time.time() - loop_iter_start
-            sleep_time = self.dt - loop_elapsed
-            if sleep_time > 0:
-                rate.sleep()
-            else:
-                 rospy.logwarn(f"Frequenza di ciclo violata! L'ottimizzazione ha impiegato {loop_elapsed:.4f}s rispetto al limite di {self.dt}s")
-
-        # Arresto di sicurezza assoluto a fine loop
-        self.cmd_vel_pub.publish(Twist())
-
-        # Salvataggio asincrono dei dati telemetrici in formato CSV per l'analisi post-esperimento
-        self.save_performance_data(sim_start_time, total_distance, total_commands, entropy_history, time_history, pose_history, lambda_history, velocity_command_log)
+            # Salvataggio asincrono dei dati telemetrici in formato CSV per l'analisi post-esperimento
+            self.save_performance_data(sim_start_time, total_distance, total_commands, entropy_history, time_history, pose_history, lambda_history, velocity_command_log)
 
         return all_trajectories, entropy_history, lambda_history, durations, self.l4c_nn, self.trees_pos, lb, ub
 

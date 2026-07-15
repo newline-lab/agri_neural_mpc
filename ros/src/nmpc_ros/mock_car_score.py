@@ -14,6 +14,7 @@ import threading
 from geometry_msgs.msg import Pose, Point, Quaternion, Pose2D
 from gazebo_msgs.srv import SetModelState
 from gazebo_msgs.msg import ModelState
+import json
 
 class MultiLayerPerceptron(torch.nn.Module):
     def __init__(self, input_dim, hidden_size=64, hidden_layers=3):
@@ -42,39 +43,85 @@ class CarScoresMock:
 
         # self.start_pos = [35.0, -8.0, 0.0]
         # self.start_pos = [38.0, 2.0, 0.0]
-        self.start_pos = [60.0, -4, 0.0]
+        # self.start_pos = [67.0, -5, 0.0]
+        self.start_pos = [6.5, 0.5, 0.0]
         
         # [X, Y, Theta_target]
         offset_x = 0
         offset_y = 0
-        self.cars_pos = np.array([
-          [43.04, -2.149, 1.4337],
-          [49.701, -7.093, -1.6995],
-          [52.743, -7.233, -1.7331],
-        ], dtype=np.float32)
+        offset_theta = 0
+        # self.cars_pos = np.array([
+        #   [43.04, -2.149, 1.4337],
+        #   [49.701, -7.093, -1.6995],
+        #   [52.743, -7.233, -1.7331],
+        # ], dtype=np.float32)
+        file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/car_map_full.json"
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                cars = json.load(f).get("cars", [])
+            # Ordiniamo la lista dei dizionari in base al valore della chiave "id"
+            cars_sorted = sorted(cars, key=lambda c: c["id"])
+            extracted = []
+            for c in cars_sorted:
+                x, y, rad = c["x"], c["y"], c["orientation_rad"]
+                # if c["class"] == "car_back":
+                #     x += 4.0 * np.cos(rad)
+                #     y += 4.0 * np.sin(rad)
+                extracted.append([x, y, rad])
+            self.trees_pos = np.array(extracted, dtype=np.float32)
+        else:
+            # Fallback hardcoded se il file non esiste
+            self.trees_pos = np.array(
+                [
+                    [43.04, -2.149, 1.4337],
+                    [49.701, -7.093, -1.6995],
+                    [52.743, -7.233, -1.7331],
+                ],
+                dtype=np.float32,
+            )
+        print(self.cars_pos)
         # calcolo offset
         self.cars_pos[:, 0] += offset_x
         self.cars_pos[:, 1] += offset_y
+        self.cars_pos[:, 2] += offset_theta
         
-        self.gt_ids = [0, 0, 0, 0] # 1: Ripe (Verde), 0: Raw (Rossa)
+        # self.gt_ids = [0, 0, 0, 0] # 1: Ripe (Verde), 0: Raw (Rossa)
         self.num_cars = len(self.cars_pos)
+        self.gt_ids = [0] * len(self.cars_pos)
 
         # ----------------------------------------------------------------------
         # COORDINATE PALI (x, y)
         # ----------------------------------------------------------------------
         self.poles_pos = np.array([
-            [47, -2],
-            [48, -2],
+            [7.1905, 5.7978],
+            [9.7331, 5.1122],
+            [16.6093, 4.0214],
+            [20.3781, 3.3552],
+            [26.0805, 2.1324],
+            [29.9115, 1.6864],
+            [35.5549, 0.3543],
+            [39.2697, -0.2548],
+            [45.0900, -1.2590],
+            [48.4675, -1.9691],
+            [54.8411, -3.1006],
+            [58.1188, -3.4193],
         ], dtype=np.float32)
         # ----------------------------------------------------------------------
         # COORDINATE AIUOLE (x, y, lunghezza, larghezza, orientamento_rad)
         # ----------------------------------------------------------------------
         self.flowerbeds_pos = np.array([
-            [56, -3.5, 8.0, 1, -1.54],
+            [2.1879, -5.5748, 4.6071, 4.5434, -0.175],    # aiuola 1
+            [64.6609, -16.5047, 2.8938, 4.5661, -0.175],  # aiuola 2
+            [32.1876, -14.3858, 66.7007, 3.5897, -0.175], # aiuola 3
+            [3.8231, 4.0245, 1.6749, 4.7252, -0.175],     # aiuola 4
+            [5.7205, 7.9094, 4.5549, 4.5383, -0.175],     # aiuola 5
+            [61.5571, -4.8938, 2.4004, 9.0567, -0.175],   # aiuola 6
+            [9.7648, 16.3899, 2.0120, 4.6903, -0.175],    # aiuola 7
+            [58.9274, 7.9500, 2.4176, 4.3564, -0.175],    # aiuola 8
+            [34.1108, 15.1653, 50.4020, 1.5882, -0.175],  # aiuola 9
         ], dtype=np.float32)
 
 
-        
         self.robot_pos = None
         self.robot_yaw = 0.0
         self.dt = 0.2 # 5 Hz

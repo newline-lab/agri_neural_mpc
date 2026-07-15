@@ -70,7 +70,7 @@ class NeuralMPCHusky:
         self.n_control = 2   # Ingressi di controllo: [v, omega]
         
         self.NUM_TARGET_TREES = 1   # subset alberi vicini da esplorare
-        self.NUM_OBSTACLE_TREES = 2 # subset alberi vicini da evitare
+        self.NUM_OBSTACLE_TREES = 4 # subset alberi vicini da evitare
 
         self.threshold_entropy = 0.15 # Quando albero considerato visto
 
@@ -97,13 +97,14 @@ class NeuralMPCHusky:
         #     # [-3.5, 10.0, 0.0],
         #     [4.0, 15.0, -np.pi]
         # ], dtype=np.float32)
-        file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/car_map_final.json"
+        file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/car_map_full.json"
         if os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8") as f:
                 cars = json.load(f).get("cars", [])
-            # Carichiamo i dati calcolando lo spostamento geometrico in base all'angolo
+            # Ordiniamo la lista dei dizionari in base al valore della chiave "id"
+            cars_sorted = sorted(cars, key=lambda c: c["id"])
             extracted = []
-            for c in cars:
+            for c in cars_sorted:
                 x, y, rad = c["x"], c["y"], c["orientation_rad"]
                 # if c["class"] == "car_back":
                 #     x += 4.0 * np.cos(rad)
@@ -128,8 +129,18 @@ class NeuralMPCHusky:
         # COORDINATE PALI (x, y)
         # ----------------------------------------------------------------------
         self.poles_pos = np.array([
-            [47, -2],
-            [48, -2],
+            [7.1905, 5.7978],
+            [9.7331, 5.1122],
+            [16.6093, 4.0214],
+            [20.3781, 3.3552],
+            [26.0805, 2.1324],
+            [29.9115, 1.6864],
+            [35.5549, 0.3543],
+            [39.2697, -0.2548],
+            [45.0900, -1.2590],
+            [48.4675, -1.9691],
+            [54.8411, -3.1006],
+            [58.1188, -3.4193],
         ], dtype=np.float32)
         self.NUM_POLES = self.poles_pos.shape[0]
         # ----------------------------------------------------------------------
@@ -138,7 +149,15 @@ class NeuralMPCHusky:
         # [12.0, 10.0, 10.0, 2.0, 0.0], # Esempio: aiuola lunga 10m e larga 2m
         # ----------------------------------------------------------------------
         self.flowerbeds_pos = np.array([
-            [56, -3.5, 8.0, 1, -1.54],
+            [2.1879, -5.5748, 4.6071, 4.5434, -0.175],    # aiuola 1
+            [64.6609, -16.5047, 2.8938, 4.5661, -0.175],  # aiuola 2
+            [32.1876, -14.3858, 66.7007, 3.5897, -0.175], # aiuola 3
+            [3.8231, 4.0245, 1.6749, 4.7252, -0.175],     # aiuola 4
+            [5.7205, 7.9094, 4.5549, 4.5383, -0.175],     # aiuola 5
+            [61.5571, -4.8938, 2.4004, 9.0567, -0.175],   # aiuola 6
+            [9.7648, 16.3899, 2.0120, 4.6903, -0.175],    # aiuola 7
+            [58.9274, 7.9500, 2.4176, 4.3564, -0.175],    # aiuola 8
+            [34.1108, 15.1653, 50.4020, 1.5882, -0.175],  # aiuola 9
         ], dtype=np.float32)
         self.NUM_FLOWERBEDS = self.flowerbeds_pos.shape[0]
 
@@ -583,10 +602,11 @@ class NeuralMPCHusky:
                 # Aggiungiamo il costo all'obiettivo
                 obj = obj + hard_potential_pole
             # ---------------------------------------------------------
-            # EVITAMENTO AIUOLE (Soft Constraint Superellisse)
+            # EVITAMENTO AIUOLE (Barriera Esponenziale + Hard Constraint)
             # ---------------------------------------------------------
-            margin_f = 1  
-            Q_flowerbed = 100.0 # Peso della repulsione dell'aiuola
+            margin_f = 1.0  
+            Q_flowerbed_hard = 100.0 # Costo base sul perimetro
+            alpha_flowerbed = 5.0    # Ripidezza della barriera. Più è alto, più spinge fuori.
             for f in range(self.NUM_FLOWERBEDS):
                 fx = FLOWERBEDS_param[0, f]
                 fy = FLOWERBEDS_param[1, f]
@@ -600,14 +620,18 @@ class NeuralMPCHusky:
                 y_rel_f = -dx_f * ca.sin(ftheta) + dy_f * ca.cos(ftheta)
                 sigma_x_f = (flen / 2.0) + margin_f
                 sigma_y_f = (fwid / 2.0) + margin_f
-                # Suggerimento: passa all'esponente 2 (ellisse standard) per una stabilità ancora maggiore, 
-                # ma se vuoi mantenere la forma più rettangolare della superellisse (esponente 4), 
-                # con ca.exp() ora non crasherà più.
+                # Metrica superellittica (esponente 4 per forma più rettangolare)
                 dist_norm_f = (x_rel_f / sigma_x_f)**4 + (y_rel_f / sigma_y_f)**4
-                # Applichiamo l'esponenziale inverso
-                repulsive_flowerbed = Q_flowerbed * ca.exp(-dist_norm_f * 1.0)
-                # Sommiamo alla funzione obiettivo INVECE di usare subject_to
+                # 1. SOFT CONSTRAINT FORTE (Barriera Esponenziale)
+                # Se dist_norm_f < 1 (dentro l'aiuola), l'esponente diventa positivo e il costo esplode.
+                # Se dist_norm_f > 1 (fuori dall'aiuola), l'esponente diventa negativo e il costo decade.
+                repulsive_flowerbed = Q_flowerbed_hard * ca.exp(alpha_flowerbed * (1.0 - dist_norm_f))
                 obj = obj + repulsive_flowerbed
+                # 2. HARD CONSTRAINT
+                # Forza il solutore a non considerare mai stati all'interno dell'aiuola.
+                # Se IPOPT fatica a trovare soluzioni, puoi abbassare leggermente a 0.8 per renderlo meno rigido.
+                opti.subject_to(dist_norm_f >= 0.9)
+            
 
             # Prevenzione delle collisioni
             # for j in range(self.NUM_OBSTACLE_TREES):

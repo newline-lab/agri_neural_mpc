@@ -60,7 +60,7 @@ class NeuralMPCHusky:
         self.hidden_layers = 3
         self.nn_input_dim = 3
 
-        self.N = 10
+        self.N = 20
         self.dt = 0.2  # Controllo a 5 Hz
         self.T = self.dt * self.N
         
@@ -70,7 +70,7 @@ class NeuralMPCHusky:
         self.n_control = 2   # Ingressi di controllo: [v, omega]
         
         self.NUM_TARGET_TREES = 1   # subset alberi vicini da esplorare
-        self.NUM_OBSTACLE_TREES = 4 # subset alberi vicini da evitare
+        self.NUM_OBSTACLE_TREES = 3 # subset alberi vicini da evitare
 
         self.threshold_entropy = 0.15 # Quando albero considerato visto
 
@@ -78,14 +78,14 @@ class NeuralMPCHusky:
         # Massimi locali
         # ----------------------------------------------------------------------
         self.punti_soglia = [
-            [-1.3037, -2.5762, -2.0944],
-            [-0.934, -2.3745, -1.5708],
-            [3.2101, 0.1273, -0.0],
-            [2.9268, 0.569, 0.5236],
-            [0.1753, 3.5078, 1.0472],
-            [-1.1693, 3.066, 1.5708],
-            [-0.4298, 2.9508, 2.0944],
-            [-1.5582, 3.2533, 2.618],
+            [-1.3037, -2.5762, -2.0944], # 1
+            [-0.934, -2.3745, -1.5708],  # 2
+            [3.2101, 0.1273, -0.0],      # 3
+            # [2.9268, 0.569, 0.5236],
+            # [0.1753, 3.5078, 1.0472],    # 4
+            [-1.1693, 3.066, 1.5708],    # 5
+            # [-0.4298, 2.9508, 2.0944],   # 6
+            # [-1.5582, 3.2533, 2.618],
         ]
 
         # ----------------------------------------------------------------------
@@ -441,7 +441,7 @@ class NeuralMPCHusky:
         W_theta = 0.5 
         # --- PARAMETRI DI SICUREZZA (HARD CONSTRAINTS GEOMETRICI) ---
         SAFETY_MARGIN_CAR = 1.5    # Raggio di ingombro auto in metri
-        SAFETY_MARGIN_POLE = 1.5   # Raggio di ingombro palo
+        SAFETY_MARGIN_POLE = 1   # Raggio di ingombro palo
         MARGIN_FLOWERBED = 1.5     # Margine extra per le aiuole
         for tree in target_trees:
             tx, ty, theta_target = tree[0], tree[1], tree[2]
@@ -565,8 +565,8 @@ class NeuralMPCHusky:
             opti.subject_to(opti.bounded(-2*np.pi, X[2, i], 2*np.pi))
 
             # Limiti di attuazione motori fisici del Clearpath Husky
-            opti.subject_to(opti.bounded(-0.5, U[0, i], 0.5))       # Velocità lineare massima v (m/s)
-            opti.subject_to(opti.bounded(-1.0, U[1, i], 1.0))       # Velocità angolare massima omega (rad/s)
+            opti.subject_to(opti.bounded(-0.2, U[0, i], 0.2))       # Velocità lineare massima v (m/s)
+            opti.subject_to(opti.bounded(-0.15, U[1, i], 0.15))       # Velocità angolare massima omega (rad/s)
             
             opti.subject_to(X[:, i + 1] == F_(X[:, i], U[:, i]))
 
@@ -605,7 +605,7 @@ class NeuralMPCHusky:
             # EVITAMENTO AIUOLE (Barriera Esponenziale + Hard Constraint)
             # ---------------------------------------------------------
             margin_f = 1.0  
-            Q_flowerbed_hard = 100.0 # Costo base sul perimetro
+            Q_flowerbed_hard = 50.0 # Costo base sul perimetro
             alpha_flowerbed = 5.0    # Ripidezza della barriera. Più è alto, più spinge fuori.
             for f in range(self.NUM_FLOWERBEDS):
                 fx = FLOWERBEDS_param[0, f]
@@ -642,13 +642,13 @@ class NeuralMPCHusky:
             # EVITAMENTO OSTACOLI AVANZATO (Repulsione + Circumnavigazione Tangenziale)
             # ------------------------------------------------------------------
             # Dimensioni dell'auto
-            car_length = 3.46 
-            car_width = 1.62   
+            car_length = 4# 3.46 
+            car_width = 2# 1.62   
             # Intensità della forza repulsiva
-            A_rep = 0.1     
+            A_rep = 50     
             # Margini di sicurezza per l'APF (non sono hard constraints)
-            margin_x = 1    
-            margin_y = 1                
+            margin_x = 1.2    
+            margin_y = 1.2                
             # Parametri della circumnavigazione tangenziale (forza scivolante)
             # Questo peso controlla quanto aggressivamente il robot sterza per circumnavigare
             Q_circ_ori = 200.0 # Regola questo parametro per ottenere la manovra fluida
@@ -669,43 +669,38 @@ class NeuralMPCHusky:
                 y_rel = -dx * ca.sin(car_theta) + dy * ca.cos(car_theta)
                 sigma_x = (car_length / 2.0) + margin_x
                 sigma_y = (car_width / 2.0) + margin_y
-                # SUPERELLISSE per coprire gli spigoli
-                dist_norm = (x_rel / sigma_x)**4 + (y_rel / sigma_y)**4
-                # Soft Constraint 1: Campo Potenziale Repulsivo
-                repulsive_cost = A_rep * dist_norm
+                # 1. Base per la Gaussiana (Ovale perfetto, esponente 2)
+                dist_norm = (x_rel / sigma_x)**2 + (y_rel / sigma_y)**2
+                # Soft Constraint 1: Campo Potenziale Repulsivo (Gaussiana 2D)
+                # alpha_flowerbed agisce qui come fattore di forma della campana (la "varianza")
+                repulsive_cost = A_rep * ca.exp(alpha_flowerbed * (1.0 - dist_norm))
                 # --- INIZIO CIRCUMNAVIGAZIONE ---
                 # --- 1. Calcolo dell'orientamento tangenziale desiderato ---
-                # Vettore radiale locale
                 v_radial = ca.vcat([x_rel, y_rel])
-                u_radial = v_radial / (ca.norm_2(v_radial) + 1e-6) # Evita divisione per zero
-                # Vettore tangenziale locale (ruotato)
-                # Verifica: se ry=0, rx=1 (davanti all'auto), u_tangential = [0, 1] 
-                # (in su nel diagramma, quindi a destra dell'auto). Corretto.
+                u_radial = v_radial / (ca.norm_2(v_radial) + 1e-6)
                 if direction_of_circ == 1:
                     u_tangential = ca.vcat([-u_radial[1], u_radial[0]])
                 else:
                     u_tangential = ca.vcat([u_radial[1], -u_radial[0]])
-                # Angolo tangenziale desiderato nel sistema locale dell'auto
                 angle_tangential_ref_car_frame = ca.atan2(u_tangential[1], u_tangential[0])
                 # --- 2. Allineamento dell'orientamento del robot ---
-                # Orientamento attuale nel sistema locale dell'auto
                 theta_fut = X[2, i+1]
                 theta_fut_car_frame = theta_fut - car_theta
-                # Differenza di orientamento (normalizzata)
                 angle_diff = angle_tangential_ref_car_frame - theta_fut_car_frame
                 angle_diff_norm = ca.atan2(ca.sin(angle_diff), ca.cos(angle_diff))
                 # Soft Constraint 2: Costo di circumnavigazione tangenziale
-                # Questo termine "penalizza" il robot se non si allinea tangenzialmente all'ostacolo.
-                # È forte solo quando il robot è vicino all'auto.
-                cost_circ = Q_circ_ori * ca.exp(-dist_norm) #* angle_diff_norm**2
+                # Anche qui usiamo la forma gaussiana per far decadere la forza dolcemente
+                cost_circ = Q_circ_ori * ca.exp(-dist_norm) * angle_diff_norm**2
                 # --- FINE CODICE CIRCUMNAVIGAZIONE ---
                 # Aggiunta dei costi al costo globale
                 obj = obj + repulsive_cost + cost_circ
-                # Hard Constraint di sicurezza assoluta (80% della superellisse)
+                # Hard Constraint di sicurezza assoluta (80% dell'ovale)
                 core_safety = 0.8  
-                opti.subject_to( dist_norm >= core_safety**4 )
-
-
+                # ATTENZIONE: Usa l'esponente 2 (o nessuno se elevi il core_safety a 2)
+                # perché dist_norm ora è calcolata al quadrato, non alla quarta!
+                opti.subject_to( dist_norm >= core_safety**2 )
+                
+                
             theta_fut = X[2, i+1]  # Orientamento futuro del ROBOT (asse X)
             distances_sq = []
             nn_batch = []
@@ -713,13 +708,11 @@ class NeuralMPCHusky:
             for j in range(self.NUM_TARGET_TREES):
                 obj_j_pos = TARGET_TREES_param[:, j]
                 theta_target = obj_j_pos[2]
-                
                 # Vettore differenza globale (Macchina - Centro Robot)
                 dX = obj_j_pos[0] - X[0, i+1]
                 dY = obj_j_pos[1] - X[1, i+1]
                 # DALLA macchina AL robot (posizione del robot relativa alla macchina)
                 dX, dY = -dX, -dY
-
                 dist_sq = dX**2 + dY**2 + 1e-6
                 distances_sq.append(dist_sq)
                 # Proiezione nel sistema di riferimento LOCALE del ROBOT
@@ -729,8 +722,6 @@ class NeuralMPCHusky:
                 # DALLA macchina AL robot (posizione del robot relativa alla macchina)
                 x_rel = dX * ca.cos(theta_target) + dY * ca.sin(theta_target)
                 y_rel = -dX * ca.sin(theta_target) + dY * ca.cos(theta_target)
-
-
                 # Calcolo Azimuth
                 theta_y_robot = theta_fut + (ca.pi / 2.0)
                 azimuth_raw = theta_y_robot - theta_target + ca.pi
@@ -738,7 +729,6 @@ class NeuralMPCHusky:
                 # rete [dx, dy, azimuth]
                 nn_input = ca.horzcat(x_rel, y_rel, azimuth_norm)
                 nn_batch.append(nn_input)
-
                 ### MASSIMI
                 # 1. Distanza quadratica dalla posizione del punto soglia ottimale (già presente)
                 dist_to_thresh_sq = (x_rel - OPT_THRESH_param[0])**2 + (y_rel - OPT_THRESH_param[1])**2
@@ -749,8 +739,8 @@ class NeuralMPCHusky:
                 angle_diff_norm = ca.atan2(ca.sin(angle_diff_raw), ca.cos(angle_diff_raw))
                 angle_error_sq = angle_diff_norm**2
                 # 3. Pesi della funzione obiettivo (DA TARARE)
-                Q_thresh_pos = 3.0   # Peso di attrazione sulla posizione (X, Y)
-                Q_thresh_ori = 2.0   # Peso per l'orientamento (Theta). 
+                Q_thresh_pos = 15.0   # Peso di attrazione sulla posizione (X, Y)
+                Q_thresh_ori = 10.0   # Peso per l'orientamento (Theta). 
                 # 4. Aggiornamento della funzione obiettivo complessiva
                 obj = obj + Q_thresh_pos * dist_to_thresh_sq + Q_thresh_ori * angle_error_sq
 
@@ -803,7 +793,15 @@ class NeuralMPCHusky:
 
         modulated_side_cost = side_observation_cost * sigmoid_factor
 
-        opti.minimize(obj - 1*entropy_obj + 0*modulated_attraction_term + 0*modulated_side_cost)                                 
+        # ### Errore di orientamento terminale (all'ultimo passo dell'orizzonte)
+        last_azimuth = nn_batch[-1][2] # Estrae l'ultimo azimuth calcolato
+        terminal_angle_diff = ca.atan2(ca.sin(OPT_THRESH_param[2] - last_azimuth), ca.cos(OPT_THRESH_param[2] - last_azimuth))
+
+        # Costo terminale pesante sull'orientamento
+        obj = obj + 100.0 * (terminal_angle_diff**2)
+
+        # opti.minimize(obj - 5*entropy_obj + 0*modulated_attraction_term + 0*modulated_side_cost)                                 
+        opti.minimize(obj - 0.1*entropy_obj)                                 
         
         # options = {
         #     "ipopt": {
@@ -869,14 +867,15 @@ class NeuralMPCHusky:
         total_commands = 0
         prev_x, prev_y = float(x_k[0]), float(x_k[1])
 
-        sim_time = 120000
+        sim_time = 12000000
         mpciter = 0
         rate = rospy.Rate(int(1/self.dt))
         warm_start = True
         x_dec_prev, lam_g_prev, mpc_step = None, None, None
 
         try:
-            while mpciter < sim_time and not rospy.is_shutdown():
+            # while mpciter < sim_time and not rospy.is_shutdown():
+            while not rospy.is_shutdown():
                 loop_iter_start = time.time()
                 rospy.loginfo('Control Loop Step: %d', mpciter)
                 

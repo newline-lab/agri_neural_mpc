@@ -68,10 +68,10 @@ class CarScoresMock:
                 #     x += 4.0 * np.cos(rad)
                 #     y += 4.0 * np.sin(rad)
                 extracted.append([x, y, rad])
-            self.trees_pos = np.array(extracted, dtype=np.float32)
+            self.cars_pos = np.array(extracted, dtype=np.float32)
         else:
             # Fallback hardcoded se il file non esiste
-            self.trees_pos = np.array(
+            self.cars_pos = np.array(
                 [
                     [43.04, -2.149, 1.4337],
                     [49.701, -7.093, -1.6995],
@@ -223,7 +223,7 @@ class CarScoresMock:
                         p_correct = logit.item()
                         rospy.loginfo(f"[Mock] Auto {i} | Terna Macchina -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
 
-                        if p_correct > 0.58:
+                        if p_correct > 0.55:
                             scores[i, 0] = 1
                         else:
                             scores[i, 0] = 0.0

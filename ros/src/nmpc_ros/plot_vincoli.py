@@ -49,18 +49,21 @@ core_safety = 0.8  # Percentuale della superellisse considerata "Hard Constraint
 
 # Caricamento Posizione Auto (Ostacoli)
 trees_pos = None
-file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/car_map_final.json"
+# Percorso aggiornato come richiesto
+file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/map_results/car_map_final.json"
+json_loaded = False # Variabile per sapere se disegnare o meno le frecce
 
 if os.path.exists(file_path):
-    print("Caricamento ostacoli da JSON...")
+    print(f"Caricamento ostacoli da JSON in corso... [{file_path}]")
     with open(file_path, "r", encoding="utf-8") as f:
         cars = json.load(f).get("cars", [])
     extracted = []
     for c in cars:
         extracted.append([c["x"], c["y"], c["orientation_rad"]])
     trees_pos = np.array(extracted, dtype=np.float32)
+    json_loaded = True
 else:
-    print("File JSON non trovato. Utilizzo ostacoli hardcoded (fallback)...")
+    print("File JSON non trovato. Utilizzo ostacoli hardcoded (solo ingombri)...")
     trees_pos = np.array([
         [43.04, -2.149, 1.4337],
         [49.701, -7.093, -1.6995],
@@ -75,16 +78,13 @@ else:
 def generate_superellipse(center_x, center_y, a, b, theta, n=4, num_points=200):
     """
     Genera i punti (x, y) di una superellisse ruotata.
-    Equazione base: |x/a|^n + |y/b|^n = 1
     """
     t = np.linspace(0, 2 * np.pi, num_points)
     
-    # Parametrizzazione della superellisse
     power = 2.0 / n
     x_rel = a * np.sign(np.cos(t)) * (np.abs(np.cos(t)) ** power)
     y_rel = b * np.sign(np.sin(t)) * (np.abs(np.sin(t)) ** power)
     
-    # Rotazione dal sistema locale a quello globale (inverso di quanto fa il MPC)
     dx = x_rel * np.cos(theta) - y_rel * np.sin(theta)
     dy = x_rel * np.sin(theta) + y_rel * np.cos(theta)
     
@@ -107,14 +107,12 @@ for p in poles_pos:
     circle = patches.Circle((p[0], p[1]), safe_radius_pole, 
                             color='red', alpha=0.5, label='Pali (Hard)')
     ax.add_patch(circle)
-    # Marcatore del centro originario
     ax.plot(p[0], p[1], 'rx', markersize=5)
 
 # --- PLOT AIUOLE ---
 for f in flowerbeds_pos:
     fx, fy, flen, fwid, ftheta = f[0], f[1], f[2], f[3], f[4]
     
-    # Assi della superellisse con margine
     sigma_x_f = (flen / 2.0) + margin_f
     sigma_y_f = (fwid / 2.0) + margin_f
     
@@ -133,9 +131,6 @@ for obs in trees_pos:
     sigma_x = (car_length / 2.0) + margin_x
     sigma_y = (car_width / 2.0) + margin_y
     
-    # Nel MPC hai dist_norm = (x_rel/sigma_x)^4 + (y_rel/sigma_y)^4
-    # E il vincolo hard è: dist_norm >= core_safety**4
-    # Questo equivale a una superellisse con semiassi scalati da core_safety
     a_hard = sigma_x * core_safety
     b_hard = sigma_y * core_safety
     
@@ -146,7 +141,16 @@ for obs in trees_pos:
     ax.plot(center_x, center_y, 'm.', markersize=8)
     # Plot dell'ancoraggio (punta del muso dell'auto da cui misuri la traslazione)
     ax.plot(car_x, car_y, 'k^', markersize=6)
-
+    
+    # --- PLOT FRECCE ORIENTAMENTO (SOLO SE DA JSON) ---
+    if json_loaded:
+        arrow_length = 1.5 # Lunghezza visiva della freccia in metri
+        dx = arrow_length * np.cos(car_theta)
+        dy = arrow_length * np.sin(car_theta)
+        
+        # Aggiunge un solo elemento alla legenda per non duplicarlo ad ogni auto
+        label = 'Heading Auto' if 'Heading Auto' not in ax.get_legend_handles_labels()[1] else ""
+        ax.arrow(center_x, center_y, dx, dy, head_width=0.4, head_length=0.4, fc='blue', ec='blue', zorder=5, label=label)
 
 # Fix dei duplicati nella legenda
 handles, labels = ax.get_legend_handles_labels()

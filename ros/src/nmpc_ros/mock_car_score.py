@@ -55,7 +55,7 @@ class CarScoresMock:
         #   [49.701, -7.093, -1.6995],
         #   [52.743, -7.233, -1.7331],
         # ], dtype=np.float32)
-        file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/car_map_full.json"
+        file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/map_results/car_map_final.json"
         if os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8") as f:
                 cars = json.load(f).get("cars", [])

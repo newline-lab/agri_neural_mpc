@@ -5,7 +5,7 @@
     <param name="gps_source" type="string" value="topic" />
     <param name="gps_topic" type="string" value="/gps_data" />
     <param name="car_map_source" type="string" value="file" />
-    <param name="car_map_file" type="string" value="/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/car_map_full.json" />
+    <param name="car_map_file" type="string" value="/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/map_results/car_map_final.json" />
     <param name="rgb_topic" type="string" value="/camera/color/image_raw" />
     <param name="depth_topic" type="string" value="/camera/aligned_depth_to_color/image_raw" />
     <param name="side" type="string" value="left" />

@@ -1,6 +1,6 @@
 <launch>
   <!-- car_data_association_node_v2.py -->
-  <node pkg="nmpc_ros" type="car_data_association_node_v2.py" name="car_data_association_node_v2" output="screen">
+  <node pkg="nmpc_ros" type="car_data_association_node_v2.py" name="car_data_association_node_v2_1" output="screen">
     <!-- Parametri privati del nodo -->
     <param name="gps_source" type="string" value="topic" />
     <param name="gps_topic" type="string" value="/gps_data" />

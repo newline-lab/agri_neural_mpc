@@ -1,5 +1,4 @@
 """
-
 Processing dei dati estratti:
 
 Per ogni cartella di snapshot all’interno di --data_dir:

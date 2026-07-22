@@ -50,27 +50,34 @@ class GpsToJsonNode:
 
     def run(self):
         rospy.loginfo("Nodo avviato. In attesa di dati su /gps_data...")
-        rospy.loginfo("Premi la BARRA SPAZIATRICE per salvare il dato corrente nel JSON.")
+        rospy.loginfo("Premi la BARRA SPAZIATRICE per salvare la macchina come VISITABLE.")
+        rospy.loginfo("Premi il tasto 'M' per salvare la macchina come NON VISITABLE.")
         rospy.loginfo("Premi 'q' o Ctrl+C per uscire.")
         
         while not rospy.is_shutdown():
             key = self.get_key()
             
-            if key == ' ':  # Se viene premuta la barra spaziatrice
+            # Gestisce sia lo spazio (visitable) che 'm'/'M' (non visitable)
+            if key == ' ' or key.lower() == 'm':
                 if self.latest_pose is not None:
-                    # Estrae i dati, arrotondando per simulare l'output che hai richiesto
+                    is_visitable = (key == ' ')
+                    
+                    # Estrae i dati e aggiunge il flag visitable
                     car_data = {
                         "id": self.current_id,
                         "x": round(self.latest_pose.x, 3),
                         "y": round(self.latest_pose.y, 3),
-                        "orientation_rad": round(self.latest_pose.theta, 4)
+                        "orientation_rad": round(self.latest_pose.theta, 4),
+                        "visitable": is_visitable
                     }
                     
                     self.cars_list.append(car_data)
                     self.current_id += 1
                     
                     self.save_to_json()
-                    rospy.loginfo(f"Dato salvato! ID: {car_data['id']} | X: {car_data['x']} | Y: {car_data['y']}")
+                    
+                    stato = "VISITABLE" if is_visitable else "NON VISITABLE"
+                    rospy.loginfo(f"Dato salvato [{stato}]! ID: {car_data['id']} | X: {car_data['x']} | Y: {car_data['y']}")
                 else:
                     rospy.logwarn("Nessun dato ancora ricevuto sul topic /gps_data! Aspetta il primo messaggio.")
             

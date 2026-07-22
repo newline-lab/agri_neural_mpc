@@ -55,7 +55,7 @@ class MultiLayerPerceptron(torch.nn.Module):
 
 
 class NeuralMPCHusky:
-    def __init__(self, run_dir=None):
+    def __init__(self, run_dir=None, trajectory_csv_path="/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/trajectory2follow/test_traj.csv"):
         self.hidden_size = 64
         self.hidden_layers = 3
         self.nn_input_dim = 3
@@ -203,6 +203,17 @@ class NeuralMPCHusky:
 
         self.baselines_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../baselines") if run_dir is None else run_dir
 
+        # ----------------------------------------------------------------------
+        # Traiettoria di riferimento da inseguire (stessa struttura del
+        # "plot_data.csv" salvato da save_performance_data: colonne
+        # time,x,y,theta,entropy,lambda_0,...). Viene caricata una volta e
+        # l'MPC insegue i punti IN SUCCESSIONE (nessuna sincronizzazione col
+        # tempo di registrazione originale).
+        # ----------------------------------------------------------------------
+        self.wp_reach_radius = 0.8   # [m] distanza sotto la quale un waypoint si considera raggiunto
+        self.ref_wp_idx = 0          # indice del prossimo waypoint da inseguire
+        self.ref_trajectory = self.load_reference_trajectory(trajectory_csv_path)
+
     # def odom_callback(self, msg):
     #     """ Estrae la posa [x, y, theta] direttamente dal topic dell'odometria filtrata """
     #     px = msg.pose.pose.position.x
@@ -322,242 +333,153 @@ class NeuralMPCHusky:
     def get_nearest_tree_indices(self, robot_position, num_obstacle=None):
         distances = np.linalg.norm(self.trees_pos[:, :2] - robot_position, axis=1)
         return np.argsort(distances)[:self.NUM_OBSTACLE_TREES]
+
+    def _find_latest_plot_data_csv(self):
+        """Cerca l'ultimo file '*_plot_data.csv' nella cartella dei baseline."""
+        if not os.path.isdir(self.baselines_dir):
+            return None
+        candidates = [f for f in os.listdir(self.baselines_dir) if f.endswith("_plot_data.csv")]
+        if not candidates:
+            return None
+        candidates.sort()
+        return os.path.join(self.baselines_dir, candidates[-1])
+
+    def load_reference_trajectory(self, csv_path=None):
+        """
+        Carica la traiettoria [x, y, theta] da un file CSV con la stessa
+        struttura del "plot_data.csv" prodotto da save_performance_data:
+            riga 0: "tree_positions", ...
+            riga 1: "trees_gt_id", ...
+            riga 2: header (time, x, y, theta, entropy, lambda_0, ...)
+            righe successive: dati
+        Se non viene passato un percorso, cerca automaticamente l'ultimo
+        file "*_plot_data.csv" salvato in self.baselines_dir.
+        """
+        if csv_path is None:
+            csv_path = self._find_latest_plot_data_csv()
+
+        if csv_path is None or not os.path.exists(csv_path):
+            rospy.logwarn(f"[load_reference_trajectory] Nessun file di traiettoria trovato (path={csv_path}). "
+                           "L'MPC non avrà una traiettoria da inseguire finché non ne viene fornita una.")
+            return np.zeros((0, 3), dtype=np.float64)
+
+        with open(csv_path, newline='') as f:
+            rows = list(csv.reader(f))
+
+        if len(rows) < 4:
+            rospy.logwarn(f"[load_reference_trajectory] File '{csv_path}' non contiene dati sufficienti.")
+            return np.zeros((0, 3), dtype=np.float64)
+
+        header = rows[2]
+        try:
+            idx_x = header.index("x")
+            idx_y = header.index("y")
+            idx_theta = header.index("theta")
+        except ValueError:
+            rospy.logerr(f"[load_reference_trajectory] Header non conforme in '{csv_path}': {header}")
+            return np.zeros((0, 3), dtype=np.float64)
+
+        data = []
+        step_row = 3
+        for row in rows[3::step_row]:
+            if not row:
+                continue
+            data.append([float(row[idx_x]), float(row[idx_y]), float(row[idx_theta])])
+
+        traj = np.array(data, dtype=np.float64)
+        rospy.loginfo(f"[load_reference_trajectory] Caricati {traj.shape[0]} waypoint da '{csv_path}'.")
+        return traj
+
+    def get_reference_window(self, robot_xy, steps):
+        if self.ref_trajectory is None or self.ref_trajectory.shape[0] == 0:
+            # Fallback di sicurezza: resta fermo sul posto
+            return np.tile([robot_xy[0], robot_xy[1], 0.0], (steps + 1, 1))
+        last_idx = self.ref_trajectory.shape[0] - 1
+        # 1. LOGICA STRETTAMENTE SEQUENZIALE
+        # Avanza di indice SOLO se il waypoint corrente è stato fisicamente raggiunto.
+        while self.ref_wp_idx < last_idx:
+            dist_curr = math.hypot(self.ref_trajectory[self.ref_wp_idx, 0] - robot_xy[0],
+                                   self.ref_trajectory[self.ref_wp_idx, 1] - robot_xy[1])
+            if dist_curr < self.wp_reach_radius:
+                self.ref_wp_idx += 1
+            else:
+                break
+        # 2. IL TRUCCO PER FERMARE L'OSCILLAZIONE:
+        # Riempiamo l'intera finestra predittiva dell'MPC con lo STESSO IDENTICO PUNTO.
+        # Niente più conflitti temporali: il robot ha un solo ed unico obiettivo e 
+        # non viene "tirato in avanti" da punti futuri che non può ancora raggiungere.
+        window = np.empty((steps + 1, 3), dtype=np.float64)
+        for k in range(steps + 1):
+            window[k, :] = self.ref_trajectory[self.ref_wp_idx, :]
+        return window
+
+    # def get_reference_window(self, robot_xy, steps):
+    #     if self.ref_trajectory is None or self.ref_trajectory.shape[0] == 0:
+    #         # Fallback di sicurezza
+    #         return np.tile([robot_xy[0], robot_xy[1], 0.0], (steps + 1, 1))
+    #     last_idx = self.ref_trajectory.shape[0] - 1
+    #     # 1. Aggiorna l'indice del waypoint corrente basandosi sulla distanza
+    #     while self.ref_wp_idx < last_idx:
+    #         dist_curr = math.hypot(self.ref_trajectory[self.ref_wp_idx, 0] - robot_xy[0],
+    #                                self.ref_trajectory[self.ref_wp_idx, 1] - robot_xy[1])
+    #         if dist_curr < self.wp_reach_radius:
+    #             self.ref_wp_idx += 1
+    #         else:
+    #             break
+    #     # 2. Crea la finestra dinamica scivolando in avanti lungo la traiettoria
+    #     window = np.empty((steps + 1, 3), dtype=np.float64)
+    #     # Lookahead spaziale: se i punti nel CSV sono troppo vicini, l'MPC non 
+    #     # "guarderà" abbastanza lontano (dt * steps = tempo, ma i punti sono nello spazio).
+    #     # Prova ad alzarlo (es. 2 o 3) se noti che il robot è troppo "miope".
+    #     skip_step = 1 
+    #     for k in range(steps + 1):
+    #         # Calcoliamo l'indice futuro. Il min() serve a non sforare l'array quando 
+    #         # arriviamo verso la fine della traiettoria globale.
+    #         future_idx = min(self.ref_wp_idx + (k * skip_step), last_idx)
+    #         window[k, :] = self.ref_trajectory[future_idx, :]
+    #     return window
     
-
-    # def get_closest_threshold_state(self, robot_state, target_trees):
-    #     """
-    #     Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
-    #     Invece di lavorare nel frame globale, calcola lo stato relativo attuale del robot
-    #     e sceglie il picco più vicino nello spazio relativo (che coincide con l'input della rete).
-    #     """
-    #     rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
-    #     best_cost = float('inf')
-    #     best_peak = [0.0, 0.0, 0.0]
-    #     # W_theta pesa l'importanza della rotazione rispetto alla distanza.
-    #     W_theta = 1.2 
-    #     for tree in target_trees:
-    #         tx, ty, theta_target = tree[0], tree[1], tree[2]
-    #         # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
-    #         dX = rx - tx
-    #         dY = ry - ty
-    #         # Proiezione della posizione nel frame della macchina
-    #         curr_x_rel = dX * math.cos(theta_target) + dY * math.sin(theta_target)
-    #         curr_y_rel = -dX * math.sin(theta_target) + dY * math.cos(theta_target)
-    #         # Calcolo Azimut attuale (0 se asse y robot e asse x macchina si guardano)
-    #         curr_theta_y = rtheta + (math.pi / 2.0)
-    #         curr_azimuth_raw = curr_theta_y - theta_target + math.pi
-    #         curr_azimuth = math.atan2(math.sin(curr_azimuth_raw), math.cos(curr_azimuth_raw))
-    #         # --- 2. RICERCA DEL PICCO OTTIMO NELLO SPAZIO RELATIVO ---
-    #         for p in self.punti_soglia:
-    #             # p è [x_rel_opt, y_rel_opt, azimuth_opt] estratti dall'analisi della rete
-    #             p_x_rel, p_y_rel, p_azimuth = p[0], p[1], p[2]
-    #             # Distanza puramente nel piano relativo
-    #             dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
-    #             # Sforzo di rotazione sull'azimut
-    #             delta_azimuth = p_azimuth - curr_azimuth
-    #             delta_azimuth_norm = math.atan2(math.sin(delta_azimuth), math.cos(delta_azimuth))
-    #             sforzo_rotazione = abs(delta_azimuth_norm)
-    #             costo_totale = dist_geometrica + (W_theta * sforzo_rotazione)
-    #             if costo_totale < best_cost:
-    #                 best_cost = costo_totale
-    #                 # Passiamo direttamente il target in coordinate RELATIVE
-    #                 best_peak = [p_x_rel, p_y_rel, p_azimuth]
-    #     return best_peak
-
-    # def get_closest_threshold_state(self, robot_state, target_trees):
-    #     """
-    #     Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
-    #     SCARTA COMPLETAMENTE i punti che si trovano in zone non ammissibili.
-    #     """
-    #     rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
-    #     best_cost = float('inf')
-    #     best_peak = None
-    #     # Variabili di fallback nel caso limite in cui TUTTI i punti siano non ammissibili
-    #     fallback_cost = float('inf')
-    #     fallback_peak = [0.0, 0.0, 0.0]
-    #     W_theta = 0.5 
-    #     # --- PARAMETRO DI SICUREZZA (HARD CONSTRAINT) ---
-    #     SAFETY_MARGIN = 2.5 # Raggio di ingombro in metri. Modificalo in base alle dimensioni delle auto.
-    #     for tree in target_trees:
-    #         tx, ty, theta_target = tree[0], tree[1], tree[2]
-    #         # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
-    #         dX = rx - tx
-    #         dY = ry - ty
-    #         curr_x_rel = dX * math.cos(theta_target) + dY * math.sin(theta_target)
-    #         curr_y_rel = -dX * math.sin(theta_target) + dY * math.cos(theta_target)
-    #         curr_theta_y = rtheta + (math.pi / 2.0)
-    #         curr_azimuth_raw = curr_theta_y - theta_target + math.pi
-    #         curr_azimuth = math.atan2(math.sin(curr_azimuth_raw), math.cos(curr_azimuth_raw))
-    #         # --- 2. RICERCA DEL PICCO OTTIMO NELLO SPAZIO RELATIVO ---
-    #         for p in self.punti_soglia:
-    #             p_x_rel, p_y_rel, p_azimuth = p[0], p[1], p[2]
-    #             # Trasformazione inversa: Da Relativo a Globale
-    #             p_x_glob = tx + (p_x_rel * math.cos(theta_target)) - (p_y_rel * math.sin(theta_target))
-    #             p_y_glob = ty + (p_x_rel * math.sin(theta_target)) + (p_y_rel * math.cos(theta_target))
-    #             # --- CONTROLLO AMMISSIBILITÀ (HARD CONSTRAINT) ---
-    #             punto_ammissibile = True
-    #             for obs in self.trees_pos:
-    #                 # Ignoriamo il target corrente
-    #                 if math.hypot(obs[0] - tx, obs[1] - ty) < 0.1:
-    #                     continue
-    #                 # Se il punto globale è troppo vicino a un altro ostacolo, non è ammissibile
-    #                 if math.hypot(p_x_glob - obs[0], p_y_glob - obs[1]) < SAFETY_MARGIN:
-    #                     punto_ammissibile = False
-    #                     break # Inutile controllare gli altri ostacoli, il punto è già scartato
-    #             # Calcolo dei costi standard
-    #             dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
-    #             delta_azimuth = p_azimuth - curr_azimuth
-    #             delta_azimuth_norm = math.atan2(math.sin(delta_azimuth), math.cos(delta_azimuth))
-    #             sforzo_rotazione = abs(delta_azimuth_norm)
-    #             costo_totale = dist_geometrica + (W_theta * sforzo_rotazione)
-    #             # Salviamo sempre il migliore in assoluto come fallback di emergenza
-    #             if costo_totale < fallback_cost:
-    #                 fallback_cost = costo_totale
-    #                 fallback_peak = [p_x_rel, p_y_rel, p_azimuth]
-    #             # SE IL PUNTO NON È AMMISSIBILE, LO SALTIAMO COMPLETAMENTE
-    #             if not punto_ammissibile:
-    #                 continue
-    #             # Se è ammissibile ed è il migliore finora, lo salviamo
-    #             if costo_totale < best_cost:
-    #                 best_cost = costo_totale
-    #                 best_peak = [p_x_rel, p_y_rel, p_azimuth]
-    #     # Se il ciclo finisce e best_peak è ancora None, significa che TUTTI i punti
-    #     # erano dentro agli ostacoli. Usiamo il fallback per non far crashare l'MPC.
-    #     if best_peak is None:
-    #         rospy.logwarn("[get_closest_threshold_state] Tutti i punti ottimi sono occupati! Uso fallback.")
-    #         return fallback_peak
-    #     return best_peak
-    def get_closest_threshold_state(self, robot_state, target_trees):
+    def mpc_opt(self, obstacle_trees, ref_window, lb, ub, x0, steps=10):
         """
-        Trova la configurazione relativa ottima [x_rel, y_rel, azimuth] dai punti soglia.
-        SCARTA COMPLETAMENTE i punti che si trovano in zone non ammissibili (auto, pali, aiuole).
+        NMPC di inseguimento traiettoria.
+        `ref_window` è un array (steps+1, 3) di punti [x, y, theta] da
+        inseguire in successione (vedi get_reference_window): NON è
+        sincronizzato col tempo, è semplicemente la sequenza di waypoint
+        futuri a partire da quello attualmente inseguito.
         """
-        rx, ry, rtheta = robot_state[0], robot_state[1], robot_state[2]
-        best_cost = float('inf')
-        best_peak = None
-        # Variabili di fallback nel caso limite in cui TUTTI i punti siano non ammissibili
-        fallback_cost = float('inf')
-        fallback_peak = [0.0, 0.0, 0.0]
-        W_theta = 0.5 
-        # --- PARAMETRI DI SICUREZZA (HARD CONSTRAINTS GEOMETRICI) ---
-        SAFETY_MARGIN_CAR = 1.5    # Raggio di ingombro auto in metri
-        SAFETY_MARGIN_POLE = 1   # Raggio di ingombro palo
-        MARGIN_FLOWERBED = 1.5     # Margine extra per le aiuole
-        for tree in target_trees:
-            tx, ty, theta_target = tree[0], tree[1], tree[2]
-            # --- 1. STATO RELATIVO ATTUALE DEL ROBOT ---
-            dX = rx - tx
-            dY = ry - ty
-            curr_x_rel = dX * math.cos(theta_target) + dY * math.sin(theta_target)
-            curr_y_rel = -dX * math.sin(theta_target) + dY * math.cos(theta_target)
-            curr_theta_y = rtheta + (math.pi / 2.0)
-            curr_azimuth_raw = curr_theta_y - theta_target + math.pi
-            curr_azimuth = math.atan2(math.sin(curr_azimuth_raw), math.cos(curr_azimuth_raw))
-            # --- 2. RICERCA DEL PICCO OTTIMO NELLO SPAZIO RELATIVO ---
-            for p in self.punti_soglia:
-                p_x_rel, p_y_rel, p_azimuth = p[0], p[1], p[2]
-                # Trasformazione inversa: Da Relativo a Globale
-                p_x_glob = tx + (p_x_rel * math.cos(theta_target)) - (p_y_rel * math.sin(theta_target))
-                p_y_glob = ty + (p_x_rel * math.sin(theta_target)) + (p_y_rel * math.cos(theta_target))
-                # --- CONTROLLO AMMISSIBILITÀ ---
-                punto_ammissibile = True
-                # A) Controllo collisione con le altre AUTO (trees_pos)
-                for obs in self.trees_pos:
-                    # Ignoriamo il target corrente (l'auto che stiamo osservando)
-                    if math.hypot(obs[0] - tx, obs[1] - ty) < 0.1:
-                        continue
-                    if math.hypot(p_x_glob - obs[0], p_y_glob - obs[1]) < SAFETY_MARGIN_CAR:
-                        punto_ammissibile = False
-                        break 
-                # B) Controllo collisione con i PALI
-                if punto_ammissibile and hasattr(self, 'poles_pos'):
-                    for pole in self.poles_pos:
-                        if math.hypot(p_x_glob - pole[0], p_y_glob - pole[1]) < SAFETY_MARGIN_POLE:
-                            punto_ammissibile = False
-                            break
-                # C) Controllo collisione con le AIUOLE (Superellisse)
-                if punto_ammissibile and hasattr(self, 'flowerbeds_pos'):
-                    for f in self.flowerbeds_pos:
-                        fx, fy, flen, fwid, ftheta = f[0], f[1], f[2], f[3], f[4]
-                        # Vettore distanza dal centro dell'aiuola
-                        dx_f = p_x_glob - fx
-                        dy_f = p_y_glob - fy
-                        # Proiezione del punto nel sistema di riferimento locale dell'aiuola
-                        x_rel_f = dx_f * math.cos(ftheta) + dy_f * math.sin(ftheta)
-                        y_rel_f = -dx_f * math.sin(ftheta) + dy_f * math.cos(ftheta)
-                        sigma_x_f = (flen / 2.0) + MARGIN_FLOWERBED
-                        sigma_y_f = (fwid / 2.0) + MARGIN_FLOWERBED
-                        # Calcolo della metrica superellittica (esponente 4 o 2)
-                        dist_norm_f = (x_rel_f / sigma_x_f)**4 + (y_rel_f / sigma_y_f)**4
-                        # Se il valore è <= 1.0, il punto è DENTRO o SUL BORDO dell'aiuola
-                        if dist_norm_f <= 1.0:
-                            punto_ammissibile = False
-                            break
-                # Calcolo dei costi standard
-                dist_geometrica = math.hypot(curr_x_rel - p_x_rel, curr_y_rel - p_y_rel)
-                delta_azimuth = p_azimuth - curr_azimuth
-                delta_azimuth_norm = math.atan2(math.sin(delta_azimuth), math.cos(delta_azimuth))
-                sforzo_rotazione = abs(delta_azimuth_norm)
-                costo_totale = dist_geometrica + (W_theta * sforzo_rotazione)
-                # Salviamo sempre il migliore in assoluto come fallback di emergenza
-                if costo_totale < fallback_cost:
-                    fallback_cost = costo_totale
-                    fallback_peak = [p_x_rel, p_y_rel, p_azimuth]
-                # SE IL PUNTO NON È AMMISSIBILE, LO SALTIAMO COMPLETAMENTE
-                if not punto_ammissibile:
-                    continue
-                # Se è ammissibile ed è il migliore finora, lo salviamo
-                if costo_totale < best_cost:
-                    best_cost = costo_totale
-                    best_peak = [p_x_rel, p_y_rel, p_azimuth]
-        # Se il ciclo finisce e best_peak è ancora None, significa che TUTTI i punti
-        # erano dentro agli ostacoli. Usiamo il fallback per non far crashare l'MPC.
-        if best_peak is None:
-            rospy.logwarn("[get_closest_threshold_state] Tutti i punti ottimi sono occupati! Uso fallback.")
-            return fallback_peak
-        return best_peak
-
-    def mpc_opt(self, target_trees, target_lambdas, obstacle_trees, closest_thresh, lb, ub, x0, steps=10):
         opti = ca.Opti()
         F_ = self.kin_model(self.dt)
 
         X = opti.variable(self.n_state, steps + 1)
         U = opti.variable(self.n_control, steps)
 
-        # TARGET_TREES occupa 3 spazi (x, y, theta), L0 occupa 2 spazi, OBSTACLE occupa 3 spazi + 3 per attrazione
-        param_size = self.n_state + self.NUM_TARGET_TREES * 5 + self.NUM_OBSTACLE_TREES * 3 + 3 + (self.NUM_POLES * 2) + (self.NUM_FLOWERBEDS * 5)
+        # OBSTACLE occupa 3 spazi (x, y, theta) per ostacolo, REF_TRAJ occupa 3 spazi per ogni punto dell'orizzonte
+        param_size = self.n_state + self.NUM_OBSTACLE_TREES * 3 + 3 * (steps + 1) + (self.NUM_POLES * 2) + (self.NUM_FLOWERBEDS * 5)
         P0 = opti.parameter(param_size)
 
         p_idx = 0
         X0 = P0[p_idx : p_idx + self.n_state]; p_idx += self.n_state
-        # Cambia *2 in *3 per i tree param
-        TARGET_TREES_param = P0[p_idx : p_idx + self.NUM_TARGET_TREES*3].reshape((self.NUM_TARGET_TREES, 3)).T; p_idx += self.NUM_TARGET_TREES*3
-        # I lambda rimangono a dimensione 2
-        L0 = P0[p_idx : p_idx + self.NUM_TARGET_TREES*2].reshape((self.NUM_TARGET_TREES, 2)); p_idx += self.NUM_TARGET_TREES * 2
-        # Cambia *2 in *3 per gli ostacoli
-        OBSTACLE_TREES_param = P0[p_idx : p_idx + self.NUM_OBSTACLE_TREES*3].reshape((self.NUM_OBSTACLE_TREES, 3)).T        
+        # Ostacoli (le altre auto)
+        OBSTACLE_TREES_param = P0[p_idx : p_idx + self.NUM_OBSTACLE_TREES*3].reshape((self.NUM_OBSTACLE_TREES, 3)).T
         p_idx += self.NUM_OBSTACLE_TREES * 3
-        # massimi
-        OPT_THRESH_param = P0[p_idx : p_idx + 3]
-        p_idx += 3
+        # Traiettoria di riferimento da inseguire: (steps+1) punti [x, y, theta]
+        REF_TRAJ_param = P0[p_idx : p_idx + 3*(steps + 1)].reshape((steps + 1, 3)).T
+        p_idx += 3 * (steps + 1)
         POLES_param = P0[p_idx : p_idx + self.NUM_POLES*2].reshape((self.NUM_POLES, 2)).T 
         p_idx += self.NUM_POLES * 2
         FLOWERBEDS_param = P0[p_idx : p_idx + self.NUM_FLOWERBEDS*5].reshape((self.NUM_FLOWERBEDS, 5)).T 
         p_idx += self.NUM_FLOWERBEDS * 5
 
-        lambda_evol = [L0]
-
         # Configurazione pesi della funzione di costo dell'MPC
-        Q_dist = 1e-5
-        R_v = 1e-5
-        R_omega = 1e-5
-        attraction = 0
-        safe_distance = 0  # Distanza di sicurezza dagli alberi-ostacolo (metri)
-        entropy_w = 40
+        R_v = 1e-3
+        R_omega = 1e-3
+        Q_track_pos = 8.0     # Peso di inseguimento sulla posizione (X, Y)
+        Q_track_ori = 0.5     # Peso di inseguimento sull'orientamento (Theta)
+        Q_track_pos_terminal = 40.0   # Peso extra sull'ultimo punto della finestra (convergenza al waypoint)
+        Q_track_ori_terminal = 15.0
         obj = 0
 
         opti.subject_to(X[:, 0] == X0)
-        ca_batch = []
 
         for i in range(steps):
             opti.subject_to(opti.bounded(lb[0] - 50.0, X[0, i], ub[0] + 50.0))
@@ -579,7 +501,7 @@ class NeuralMPCHusky:
             margin_pole = 0.8 
             # Parametri del potenziale rigido (Muro Esponenziale)
             Q_pole_hard = 100.0   # Costo base altissimo al confine dell'ostacolo
-            alpha_pole = 10.0      # Ripidezza estrema. Più è alto, più il "muro" è verticale
+            alpha_pole = 3.0      # Ripidezza estrema. Più è alto, più il "muro" è verticale
             for p in range(self.NUM_POLES):
                 px, py = POLES_param[0, p], POLES_param[1, p]
                 # 1. Distanza globale
@@ -606,7 +528,7 @@ class NeuralMPCHusky:
             # ---------------------------------------------------------
             margin_f = 1.0  
             Q_flowerbed_hard = 50.0 # Costo base sul perimetro
-            alpha_flowerbed = 5.0    # Ripidezza della barriera. Più è alto, più spinge fuori.
+            alpha_flowerbed = 2.0    # Ripidezza della barriera. Più è alto, più spinge fuori.
             for f in range(self.NUM_FLOWERBEDS):
                 fx = FLOWERBEDS_param[0, f]
                 fy = FLOWERBEDS_param[1, f]
@@ -693,115 +615,44 @@ class NeuralMPCHusky:
                 cost_circ = Q_circ_ori * ca.exp(-dist_norm) * angle_diff_norm**2
                 # --- FINE CODICE CIRCUMNAVIGAZIONE ---
                 # Aggiunta dei costi al costo globale
-                obj = obj + repulsive_cost + cost_circ
+                obj = obj + repulsive_cost #+ cost_circ
                 # Hard Constraint di sicurezza assoluta (80% dell'ovale)
                 core_safety = 0.8  
                 # ATTENZIONE: Usa l'esponente 2 (o nessuno se elevi il core_safety a 2)
                 # perché dist_norm ora è calcolata al quadrato, non alla quarta!
                 opti.subject_to( dist_norm >= core_safety**2 )
-                
-                
-            theta_fut = X[2, i+1]  # Orientamento futuro del ROBOT (asse X)
-            distances_sq = []
-            nn_batch = []
-            side_observation_cost = 0
-            for j in range(self.NUM_TARGET_TREES):
-                obj_j_pos = TARGET_TREES_param[:, j]
-                theta_target = obj_j_pos[2]
-                # Vettore differenza globale (Macchina - Centro Robot)
-                dX = obj_j_pos[0] - X[0, i+1]
-                dY = obj_j_pos[1] - X[1, i+1]
-                # DALLA macchina AL robot (posizione del robot relativa alla macchina)
-                dX, dY = -dX, -dY
-                dist_sq = dX**2 + dY**2 + 1e-6
-                distances_sq.append(dist_sq)
-                # Proiezione nel sistema di riferimento LOCALE del ROBOT
-                # # Asse X del robot = avanti, Asse Y = sinistra
-                # x_rel = dX * ca.cos(theta_fut) + dY * ca.sin(theta_fut)
-                # y_rel = -dX * ca.sin(theta_fut) + dY * ca.cos(theta_fut)
-                # DALLA macchina AL robot (posizione del robot relativa alla macchina)
-                x_rel = dX * ca.cos(theta_target) + dY * ca.sin(theta_target)
-                y_rel = -dX * ca.sin(theta_target) + dY * ca.cos(theta_target)
-                # Calcolo Azimuth
-                theta_y_robot = theta_fut + (ca.pi / 2.0)
-                azimuth_raw = theta_y_robot - theta_target + ca.pi
-                azimuth_norm = ca.atan2(ca.sin(azimuth_raw), ca.cos(azimuth_raw))
-                # rete [dx, dy, azimuth]
-                nn_input = ca.horzcat(x_rel, y_rel, azimuth_norm)
-                nn_batch.append(nn_input)
-                ### MASSIMI
-                # 1. Distanza quadratica dalla posizione del punto soglia ottimale (già presente)
-                dist_to_thresh_sq = (x_rel - OPT_THRESH_param[0])**2 + (y_rel - OPT_THRESH_param[1])**2
-                # 2. Calcolo dell'errore di orientamento rispetto al punto soglia
-                # theta_fut è l'orientamento del robot al passo i+1, OPT_THRESH_param[2] è il theta desiderato
-                angle_diff_raw = OPT_THRESH_param[2] - azimuth_norm
-                # Normalizzazione dell'errore angolare tra -pi e +pi usando CasADi
-                angle_diff_norm = ca.atan2(ca.sin(angle_diff_raw), ca.cos(angle_diff_raw))
-                angle_error_sq = angle_diff_norm**2
-                # 3. Pesi della funzione obiettivo (DA TARARE)
-                Q_thresh_pos = 15.0   # Peso di attrazione sulla posizione (X, Y)
-                Q_thresh_ori = 10.0   # Peso per l'orientamento (Theta). 
-                # 4. Aggiornamento della funzione obiettivo complessiva
-                obj = obj + Q_thresh_pos * dist_to_thresh_sq + Q_thresh_ori * angle_error_sq
 
-            ca_batch.append(ca.vcat([*nn_batch]))
-                        
-            min_dist_sq = distances_sq[0]
-            for j in range(1, self.NUM_TARGET_TREES):
-                min_dist_sq = ca.fmin(min_dist_sq, distances_sq[j])
-            attraction = attraction + min_dist_sq * Q_dist
-            
+            # ---------------------------------------------------------
+            # INSEGUIMENTO TRAIETTORIA DI RIFERIMENTO
+            # ---------------------------------------------------------
+            # Punto di riferimento associato al passo i+1 dell'orizzonte
+            x_ref = REF_TRAJ_param[0, i+1]
+            y_ref = REF_TRAJ_param[1, i+1]
+            theta_ref = REF_TRAJ_param[2, i+1]
+
+            theta_fut = X[2, i+1]
+            theta_err_raw = theta_ref - theta_fut
+            theta_err = ca.atan2(ca.sin(theta_err_raw), ca.cos(theta_err_raw))
+
+            tracking_cost = Q_track_pos * ((X[0, i+1] - x_ref)**2 + (X[1, i+1] - y_ref)**2) \
+                            + Q_track_ori * theta_err**2
+            obj = obj + tracking_cost
+
             obj = obj + R_v * (U[0, i]**2) + R_omega * (U[1, i]**2)
-            
 
-        # Inferenza batched con L4CasADi
-        nn_full_batch_input = ca.vcat(ca_batch)
-        surrogate_output_ripe = self.l4c_nn[0](nn_full_batch_input)
-        surrogate_output_raw = self.l4c_nn[1](nn_full_batch_input)
+        # ---------------------------------------------------------
+        # Costo terminale: convergenza pesante sull'ultimo waypoint della finestra
+        # ---------------------------------------------------------
+        x_ref_N = REF_TRAJ_param[0, steps]
+        y_ref_N = REF_TRAJ_param[1, steps]
+        theta_ref_N = REF_TRAJ_param[2, steps]
+        theta_err_N_raw = theta_ref_N - X[2, steps]
+        theta_err_N = ca.atan2(ca.sin(theta_err_N_raw), ca.cos(theta_err_N_raw))
 
-        # Adattamento output 1D: applicazione Sigmoide per mappare logit -> probabilità [p, 1-p]
-        prob_ripe = 1.0 / (1.0 + ca.exp(-surrogate_output_ripe))
-        prob_raw = 1.0 / (1.0 + ca.exp(-surrogate_output_raw))
+        obj = obj + Q_track_pos_terminal * ((X[0, steps] - x_ref_N)**2 + (X[1, steps] - y_ref_N)**2) \
+                  + Q_track_ori_terminal * theta_err_N**2
 
-        L0_ext = ca.vcat([L0 for _ in range(steps)])
-        sel = L0_ext[:, 0] >= L0_ext[:, 1]
-        p_selected = ca.if_else(sel, prob_ripe, prob_raw)
-        
-        # Rigenerazione del vettore di likelihood bidimensionale per il calcolo Bayesiano
-        # z_k_bin = ca.horzcat(p_selected, 1.0 - p_selected)
-        # Mapping da [0, 1] a [0.5, 1] nel grafo CasADi ---
-        p_mapped = 0.5 + 0.5 * p_selected
-        # Rigenerazione del vettore di likelihood bidimensionale per il calcolo Bayesiano
-        z_k_bin = ca.horzcat(p_mapped, 1.0 - p_mapped)
-        
-        for i in range(steps):
-            lambda_next = self.bayes(lambda_evol[-1], z_k_bin[i*self.NUM_TARGET_TREES:(i+1)*self.NUM_TARGET_TREES,:])
-            lambda_evol.append(lambda_next)
-            
-        entropy_obj = 0
-        for i in range(1, steps+1):
-            entropy_future = self.entropy_target(lambda_evol[i])
-            entropy_obj += ca.exp(-2*i)*ca.logsumexp(-entropy_w*entropy_future)
-
-        sq_dist_to_targets = ca.sum1((X0[:2] - TARGET_TREES_param[:2, :])**2)
-        min_sq_dist = ca.mmin(sq_dist_to_targets)
-
-        threshold_sq_dist = 15.0
-        sigmoid_steepness = 0.5
-        sigmoid_factor = 1.0 / (1.0 + ca.exp(-sigmoid_steepness * (min_sq_dist - threshold_sq_dist)))
-        modulated_attraction_term = attraction * sigmoid_factor
-
-        modulated_side_cost = side_observation_cost * sigmoid_factor
-
-        # ### Errore di orientamento terminale (all'ultimo passo dell'orizzonte)
-        last_azimuth = nn_batch[-1][2] # Estrae l'ultimo azimuth calcolato
-        terminal_angle_diff = ca.atan2(ca.sin(OPT_THRESH_param[2] - last_azimuth), ca.cos(OPT_THRESH_param[2] - last_azimuth))
-
-        # Costo terminale pesante sull'orientamento
-        obj = obj + 100.0 * (terminal_angle_diff**2)
-
-        # opti.minimize(obj - 5*entropy_obj + 0*modulated_attraction_term + 0*modulated_side_cost)                                 
-        opti.minimize(obj - 0.1*entropy_obj)                                 
+        opti.minimize(obj)
         
         # options = {
         #     "ipopt": {
@@ -831,12 +682,10 @@ class NeuralMPCHusky:
 
         p0_val = ca.vertcat(
             x0,
-            ca.reshape(target_trees, 3 * self.NUM_TARGET_TREES, 1),
-            ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
             ca.reshape(obstacle_trees, 3 * self.NUM_OBSTACLE_TREES, 1),
-            ca.DM(closest_thresh),
-            ca.reshape(self.poles_pos, 2 * self.NUM_POLES, 1),           # <-- NUOVO
-            ca.reshape(self.flowerbeds_pos, 5 * self.NUM_FLOWERBEDS, 1)  # <-- NUOVO
+            ca.reshape(ca.DM(ref_window), 3 * (steps + 1), 1),
+            ca.reshape(self.poles_pos, 2 * self.NUM_POLES, 1),
+            ca.reshape(self.flowerbeds_pos, 5 * self.NUM_FLOWERBEDS, 1)
         )
         opti.set_value(P0, p0_val)
 
@@ -898,32 +747,27 @@ class NeuralMPCHusky:
                 self.tree_markers_pub.publish(tree_markers_msg)
                 
                 robot_position_xy = np.array(state_now[:2])
-                target_indices = self.get_target_tree_indices(robot_position_xy, num_target=self.NUM_TARGET_TREES)
                 obstacle_indices = self.get_nearest_tree_indices(robot_position_xy, num_obstacle=self.NUM_OBSTACLE_TREES)
-
-                target_trees_subset = self.trees_pos[target_indices]
                 obstacle_trees_subset = self.trees_pos[obstacle_indices]
-                target_lambdas = self.beliefs_k[target_indices, :]
 
-                closest_thresh_state = self.get_closest_threshold_state(state_now, target_trees_subset)
+                # Finestra di traiettoria di riferimento da inseguire per l'orizzonte corrente
+                # (avanzamento sui waypoint per prossimità, non sincronizzato col tempo originale)
+                ref_window = self.get_reference_window(robot_position_xy, self.N)
 
                 step_start_time = time.time()
                 try:
                     if warm_start or mpc_step is None:
-                        # AGGIUNGI closest_thresh_state AI PARAMETRI
                         mpc_step, u, x_traj, x_dec_prev, lam_g_prev = self.mpc_opt(
-                            target_trees_subset, target_lambdas, obstacle_trees_subset, closest_thresh_state, lb, ub, x_k, steps=self.N
+                            obstacle_trees_subset, ref_window, lb, ub, x_k, steps=self.N
                         )
                         warm_start = False
                     else:
                         P0_val = ca.vertcat(
                             x_k,
-                            ca.reshape(target_trees_subset, 3 * self.NUM_TARGET_TREES, 1),
-                            ca.reshape(target_lambdas, 2 * self.NUM_TARGET_TREES, 1),
                             ca.reshape(obstacle_trees_subset, 3 * self.NUM_OBSTACLE_TREES, 1),
-                            ca.DM(closest_thresh_state),
-                            ca.reshape(self.poles_pos, 2 * self.NUM_POLES, 1),           # <-- NUOVO
-                            ca.reshape(self.flowerbeds_pos, 5 * self.NUM_FLOWERBEDS, 1)  # <-- NUOVO
+                            ca.reshape(ca.DM(ref_window), 3 * (self.N + 1), 1),
+                            ca.reshape(self.poles_pos, 2 * self.NUM_POLES, 1),
+                            ca.reshape(self.flowerbeds_pos, 5 * self.NUM_FLOWERBEDS, 1)
                         )
                         u, x_traj, x_dec_prev, lam_g_prev = mpc_step(P0_val, x_dec_prev, lam_g_prev)
                     step_duration = time.time() - step_start_time

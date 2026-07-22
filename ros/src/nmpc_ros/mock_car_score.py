@@ -224,7 +224,7 @@ class CarScoresMock:
                         rospy.loginfo(f"[Mock] Auto {i} | Terna Macchina -> dX: {x_rel:.2f}m, dY: {y_rel:.2f}m | Azimuth: {azimuth_norm:.2f}rad | Output: {p_correct:.4f}")
 
                         if p_correct > 0.55:
-                            scores[i, 0] = 1
+                            scores[i, 0] = 0.85
                         else:
                             scores[i, 0] = 0.0
             

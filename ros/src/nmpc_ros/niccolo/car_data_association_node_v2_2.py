@@ -84,9 +84,9 @@ COCO_CAR_CLASSES = {2,7}       # car, bus, truck
 
 
 HARDCODED_CARS: List[dict] = [
-    {"id": 0, "x": 42.36, "y": -6.16, "class": "car_back", "orientation_rad": 1.57},
-    {"id": 1, "x": 49.53, "y": -7.62, "class": "car_front", "orientation_rad": -1.57},
-    {"id": 2, "x": 52.48, "y":  -8.08, "class": "car_front",  "orientation_rad":  -1.57},
+    {"id": 0, "x": 42.36, "y": -6.16, "orientation_rad": 1.57, "visitable": True},
+    {"id": 1, "x": 49.53, "y": -7.62, "orientation_rad": -1.57, "visitable": True},
+    {"id": 2, "x": 52.48, "y": -8.08, "orientation_rad": -1.57, "visitable": True},
 ]
 
 
@@ -98,14 +98,12 @@ class MappedCar:
     """One car from the offline car map (car_mapper_node)."""
 
     def __init__(self, car_id: int, x: float, y: float,
-                 tag: str = "unknown",
                  orientation_rad: Optional[float] = None,
                  lat: Optional[float] = None,
                  lon: Optional[float] = None,
                  visitable: bool = True):
         self.id = car_id
         self.x, self.y = x, y
-        self.tag = tag                  
         self.orientation_rad = orientation_rad
         self.lat = lat
         self.lon = lon
@@ -123,15 +121,12 @@ def cars_from_state(car_dicts: List[dict]) -> List[MappedCar]:
     HARDCODED_CARS constant above — all three use the same dict shape."""
     cars = []
     for d in car_dicts:
-        cls = d.get("class") or ""
-        tag = cls.replace("car_", "") if cls else "unknown"
         visitable = d.get("visitable", True)
-        
+
         cars.append(MappedCar(
             car_id=int(d["id"]),
             x=float(d["x"]),
             y=float(d["y"]),
-            tag=tag,
             orientation_rad=d.get("orientation_rad"),
             visitable=visitable
         ))
@@ -428,9 +423,17 @@ def match_detection_to_car(car_det, car_depth,
     match_quality = target.distance_to(cx, cy)
     return target, match_quality
 
-def update_score(old_score, new_score, alpha_person, alpha_no_person):
-    alpha = alpha_person if new_score >= 0 else alpha_no_person
-    return alpha * new_score + (1 - alpha) * old_score
+def update_score(old_score, new_score, alpha_person, alpha_no_person, uncertain=False):
+    print(uncertain)
+    if uncertain:
+        return 0   # slow decay toward 0, preserves history
+    else:
+        alpha = alpha_person if new_score >= 0 else alpha_no_person
+        
+        sss = "ns:" + str(new_score) + ", os: " + str(old_score) + ", alpha: " + str(alpha) + ", s: " + str(alpha * new_score + (1 - alpha) * old_score)
+        rospy.loginfo(sss)
+
+        return alpha * new_score + (1 - alpha) * old_score
 
 def car_depth_interval(c, robot_x, robot_y, car_length_m):
     d_ref = c.distance_to(robot_x, robot_y)
@@ -452,6 +455,71 @@ def car_near_point(c, robot_x, robot_y, car_length_m):
     d_ref = math.hypot(c.x - robot_x, c.y - robot_y)
     d_other = math.hypot(ox - robot_x, oy - robot_y)
     return (c.x, c.y) if d_ref <= d_other else (ox, oy)
+
+def driver_zone_corners(c: 'MappedCar', car_width_m: float,
+                        driver_zone_length_m: float):
+    """
+    World-frame corners of the rectangle where the driver sits:
+      - one long edge at the car's reference point (c.x, c.y)
+      - the other long edge shifted `driver_zone_length_m` TOWARDS the
+        car's center/other end, along its orientation axis
+      - width `car_width_m`, centered on that length axis
+    Returns None if the car has no orientation_rad (rectangle undefined,
+    e.g. cars loaded without a heading) — caller must decide how to
+    treat that (we treat it as "not visible", see is_driver_zone_in_fov).
+    """
+    if c.orientation_rad is None:
+        return None
+
+    # unit vector along the car's length axis, pointing from the
+    # reference point TOWARDS the car's center/other end — matches the
+    # same convention used in car_near_point()/car_depth_interval()
+    ux, uy = -math.cos(c.orientation_rad), -math.sin(c.orientation_rad)
+    # perpendicular unit vector, for width
+    wx, wy = -uy, ux
+
+    half_w = car_width_m / 2.0
+    p1 = (c.x, c.y)
+    p2 = (c.x + driver_zone_length_m * ux, c.y + driver_zone_length_m * uy)
+
+    return [
+        (p1[0] + half_w * wx, p1[1] + half_w * wy),
+        (p1[0] - half_w * wx, p1[1] - half_w * wy),
+        (p2[0] - half_w * wx, p2[1] - half_w * wy),
+        (p2[0] + half_w * wx, p2[1] + half_w * wy),
+    ]
+
+
+def bearing_to_point(robot_x, robot_y, robot_theta, side, px, py):
+    """
+    INVERSE of project_detection_to_world: given a world point, returns
+    the bearing angle (radians) that WOULD have produced it under the
+    same side/robot_theta convention. bearing == 0 is dead-center of the
+    FOV; abs(bearing) <= radians(hfov_deg/2) means "inside the FOV".
+    """
+    side_offset = math.pi / 2 if side == "left" else -math.pi / 2
+    world_angle = math.atan2(py - robot_y, px - robot_x)
+    delta = world_angle - (robot_theta + side_offset)
+    delta = math.atan2(math.sin(delta), math.cos(delta))   # normalize
+    return -delta if side == "left" else delta
+
+
+def is_driver_zone_in_fov(c, robot_x, robot_y, robot_theta, side, hfov_deg,
+                          car_width_m, driver_zone_length_m):
+    """
+    True only if the ENTIRE driver-zone rectangle falls inside the
+    camera's angular FOV as seen from the robot's current pose. If the
+    car has no orientation_rad, the rectangle can't be localized, so we
+    conservatively return False (treat as uncertain/not visible).
+    """
+    corners = driver_zone_corners(c, car_width_m, driver_zone_length_m)
+    if corners is None:
+        return False
+    half_fov = math.radians(hfov_deg / 2.0)
+    return all(
+        abs(bearing_to_point(robot_x, robot_y, robot_theta, side, px, py)) <= half_fov
+        for px, py in corners
+    )
 
 # ============================================================================
 # Data association node — car-oriented
@@ -488,10 +556,12 @@ class DataAssociationNode:
         origin_lon = rospy.get_param("~origin_lon", 12.469038428190489)
         self._ox, self._oy, self._zone_n, self._zone_l = utm.from_latlon(
             origin_lat, origin_lon)
-        self.ema_alpha_person = rospy.get_param("~ema_alpha_person", 0.6)
+        self.ema_alpha_person = rospy.get_param("~ema_alpha_person", 1.0)
         self.ema_alpha_no_person = rospy.get_param("~ema_alpha_no_person", 0.1)
         self.close_range_m = rospy.get_param("~close_range_m", 1.75)
         self.person_depth_tolerance_m = rospy.get_param("~person_depth_tolerance_m", 2.0)
+        self.car_width_m = rospy.get_param("~car_width_m", 1.8)
+        self.driver_zone_length_m = rospy.get_param("~driver_zone_length_m", 1.5)
 
         self.cars_lock = threading.Lock()
         self.cars: List[MappedCar] = []
@@ -653,6 +723,16 @@ class DataAssociationNode:
         depth = self.bridge.imgmsg_to_cv2(depth_msg, "passthrough")
         img_w = rgb.shape[1]
 
+        # Per-car "is the driver zone actually inside the current FOV?"
+        # computed once per step, only for visitable cars — unvisitable
+        # cars keep their existing forced-0 behavior untouched.
+        driver_zone_visible = {
+            c.id: is_driver_zone_in_fov(
+                c, rx, ry, rtheta, self.side, self.hfov_deg,
+                self.car_width_m, self.driver_zone_length_m)
+            for c in cars_snapshot if c.visitable
+        }
+
         det = self.yolo.detect(rgb)
         cars_det = [d for d in det if int(d[5]) in COCO_CAR_CLASSES]
         persons = [d for d in det if int(d[5]) == COCO_PERSON]
@@ -699,7 +779,6 @@ class DataAssociationNode:
         any_occupied = False
         best_car_box = None
         for car, car_depth, target, match_quality in best_by_id.values():
-            # person-in-car containment (best person for THIS car box)
             best_person_conf = None
             for p in persons:
                 if containment_ratio(p[:4], car[:4]) >= self.cont_thresh:
@@ -707,33 +786,32 @@ class DataAssociationNode:
                     if best_person_conf is None or pc > best_person_conf:
                         best_person_conf = pc
 
-            # score update — indexed by mapped-car id as a COLUMN, ROW 0 ONLY.
             car_conf = float(car[4])
-            is_unvisitable_back = (target.tag == "back" and not target.visitable)
+            is_unvisitable = not target.visitable
+            fov_blocks_view = (target.visitable
+                               and not driver_zone_visible.get(target.id, False))
+            uncertain = fov_blocks_view or is_unvisitable
 
-            if best_person_conf is not None:
-                new = +(car_conf + best_person_conf) / 2.0   # (0, +1]
+            if uncertain and best_person_conf is None:
+                new = 0.0
+            elif best_person_conf is not None:
+                new = +(car_conf + best_person_conf) / 2.0
             else:
-                if is_unvisitable_back:
-                    new = 0.0
-                else:
-                    new = -car_conf                          # [-1, 0)
-                                          
+                new = -car_conf
+
             with self.cars_lock:
-                if is_unvisitable_back and best_person_conf is None:
-                    # Forza lo score a 0 saltando l'EMA
-                    self.scores[0, target.score_col] = 0.0
-                else:
-                    old = self.scores[0, target.score_col]
-                    self.scores[0, target.score_col] = update_score(
-                        old, new, self.ema_alpha_person, self.ema_alpha_no_person)
-                
+                old = self.scores[0, target.score_col]
+                self.scores[0, target.score_col] = update_score(
+                    old, new, self.ema_alpha_person, self.ema_alpha_no_person,
+                    uncertain=uncertain)
                 score_now = self.scores[0, target.score_col]
-            
+
             rospy.loginfo(
-                "[Assoc] car %d (%s, visitable=%r): score=%+.2f (car=%.2f person=%s "
-                "depth=%.2fm car_pos=(%.2f,%.2f) match_err=%.2fm)",
-                target.id, target.tag, target.visitable, score_now, car_conf,
+                "[Assoc] car %d (visitable=%r, driver_fov=%r): score=%+.2f "
+                "(car=%.2f person=%s depth=%.2fm car_pos=(%.2f,%.2f) "
+                "match_err=%.2fm)",
+                target.id, target.visitable,
+                driver_zone_visible.get(target.id, "n/a"), score_now, car_conf,
                 f"{best_person_conf:.2f}" if best_person_conf else "none",
                 car_depth, target.x, target.y, match_quality)
 
@@ -752,6 +830,20 @@ class DataAssociationNode:
             if near_car.id in matched_ids:
                 continue
 
+            if near_car.visitable and not driver_zone_visible.get(near_car.id, False):
+                with self.cars_lock:
+                    old = self.scores[0, near_car.score_col]
+                    self.scores[0, near_car.score_col] = update_score(
+                        old, 0.0, self.ema_alpha_person, self.ema_alpha_no_person,
+                        uncertain=True)
+                    score_now = self.scores[0, near_car.score_col]
+                rospy.loginfo(
+                    "[Assoc] car %d: FALLBACK skipped, driver zone outside "
+                    "FOV — decaying toward 0 (score=%+.2f)",
+                    near_car.id, score_now)
+                last_target = near_car
+                continue
+
             near_x, near_y = car_near_point(near_car, rx, ry, self.car_length_m)
             expected_dist = math.hypot(near_x - rx, near_y - ry)
             best_person_conf = None
@@ -768,6 +860,7 @@ class DataAssociationNode:
             if best_person_conf is None:
                 continue
 
+            rospy.loginfo("ciao")
             new = +best_person_conf
             with self.cars_lock:
                 old = self.scores[0, near_car.score_col]
@@ -776,10 +869,9 @@ class DataAssociationNode:
                 score_now = self.scores[0, near_car.score_col]
 
             rospy.loginfo(
-                "[Assoc] car %d (%s): FALLBACK score=%+.2f (no car box "
+                "[Assoc] car %d: FALLBACK score=%+.2f (no car box "
                 "detected; person_conf=%.2f, expected_dist=%.2fm)",
-                near_car.id, near_car.tag, score_now, best_person_conf,
-                expected_dist)
+                near_car.id, score_now, best_person_conf, expected_dist)
 
             last_target = near_car
             any_occupied = True
@@ -816,7 +908,6 @@ class DataAssociationNode:
             "cars": [{"id": c.id,
                       "score": float(scores[0, c.score_col]),
                       "score_row1": float(scores[1, c.score_col]),
-                      "tag": c.tag,
                       "x": round(c.x, 3),
                       "y": round(c.y, 3),
                       "lat": round(c.lat, 8) if c.lat is not None else None,

@@ -49,7 +49,7 @@ core_safety = 0.8  # Percentuale della superellisse considerata "Hard Constraint
 
 # Caricamento Posizione Auto (Ostacoli)
 trees_pos = None
-# Percorso aggiornato come richiesto
+car_ids = []
 file_path = "/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/map_results/car_map_final.json"
 json_loaded = False # Variabile per sapere se disegnare o meno le frecce
 
@@ -58,8 +58,10 @@ if os.path.exists(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
         cars = json.load(f).get("cars", [])
     extracted = []
-    for c in cars:
+    for idx, c in enumerate(cars):
         extracted.append([c["x"], c["y"], c["orientation_rad"]])
+        # Usa il campo 'id' se presente, altrimenti l'indice
+        car_ids.append(c.get("id", idx))
     trees_pos = np.array(extracted, dtype=np.float32)
     json_loaded = True
 else:
@@ -69,6 +71,7 @@ else:
         [49.701, -7.093, -1.6995],
         [52.743, -7.233, -1.7331],
     ], dtype=np.float32)
+    car_ids = [0, 1, 2]
 
 
 # ==========================================
@@ -121,8 +124,9 @@ for f in flowerbeds_pos:
     ax.plot(fx, fy, 'g+', markersize=8) # Centro
 
 # --- PLOT AUTO / OSTACOLI ---
-for obs in trees_pos:
+for idx, obs in enumerate(trees_pos):
     car_x, car_y, car_theta = obs[0], obs[1], obs[2]
+    car_id = car_ids[idx]
     
     # Traslazione del centro vettura usata nel tuo MPC
     center_x = car_x - (car_length / 2.0) * np.cos(car_theta)
@@ -141,6 +145,12 @@ for obs in trees_pos:
     ax.plot(center_x, center_y, 'm.', markersize=8)
     # Plot dell'ancoraggio (punta del muso dell'auto da cui misuri la traslazione)
     ax.plot(car_x, car_y, 'k^', markersize=6)
+    
+    # Plot dell'ID dell'auto vicino al centro
+    ax.text(center_x, center_y + 0.4, f"ID: {car_id}", 
+            fontsize=9, fontweight='bold', color='black', 
+            ha='center', va='bottom',
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='none'))
     
     # --- PLOT FRECCE ORIENTAMENTO (SOLO SE DA JSON) ---
     if json_loaded:

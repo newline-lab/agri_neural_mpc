@@ -11,11 +11,22 @@ update the per-car score array in [-1, +1]:
     car only      : scores[id] = -conf_car                     in [-1, 0)
     no detection  : score unchanged (optional EMA via ~ema_alpha)
 
+A detection only counts as VALID evidence when the camera is actually
+looking at the half of the car that contains the driver: the car body
+(a segment of length ~car_length_m along orientation_rad, with (c.x, c.y)
+as its front end) is split down the middle into a front half (driver
+side) and a back half. We project the current viewing ray — using the
+exact same `angle` geometry as project_detection_to_world() — out to the
+relevant depth, and check which half of the car body that point falls
+on. If it falls on the back half (or the car has no known orientation),
+the detection is UNCERTAIN and the score is pulled toward 0 regardless of
+what was seen, since we can't trust it as evidence about the driver seat.
+
 Published topics:
   /parking/scores        std_msgs/Float32MultiArray (per-car scores, index=car id)
   /parking/scores_json   std_msgs/String  (rich: id, score, tag, position)
-  /gps_data              geometry_msgs/Pose2D   (only if ~gps_source:=serial)
-  /gps/rtk_quality       std_msgs/Int32         (only if ~gps_source:=serial)
+  /gps_data               geometry_msgs/Pose2D   (only if ~gps_source:=serial)
+  /gps/rtk_quality        std_msgs/Int32         (only if ~gps_source:=serial)
   /data_association/debug_image  sensor_msgs/Image
 
 Required params:
@@ -34,12 +45,11 @@ Main optional params:
   ~gps_source         "serial" (default) or "topic"
   ~gps_topic          /gps_data
   ~side               "left" | "right"   (default "right", as mapper)
-  ~hfov_deg 69.0, ~max_bearing_deg 15.0  (same values as car_mapper_node)
-  ~assoc_max_m 1.0    max projected-detection→mapped-car match distance
+  ~hfov_deg 69.0
   ~containment_thresh 0.7
   ~conf_thresh 0.4, ~iou_thresh 0.45, ~img_size 640, ~device cuda
   ~gps_range_m 4.5, ~max_depth_m 4.5     (site-validated values)
-  ~ema_alpha 1.0   (1.0 = pure overwrite; <1 = exponential smoothing)
+  ~ema_alpha_person 0.6, ~ema_alpha_no_person 0.1
   ~rgb_topic /cam_up/color/image_raw
   ~depth_topic /cam_up/aligned_depth_to_color/image_raw
   ~serial_port /dev/ttyUSB0, ~baud 115200, ~ntrip_* (as in your client)
@@ -60,7 +70,6 @@ import numpy as np
 import torch
 
 import rospy
-import message_filters
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Pose2D
 from sensor_msgs.msg import Image
@@ -424,16 +433,11 @@ def match_detection_to_car(car_det, car_depth,
     return target, match_quality
 
 def update_score(old_score, new_score, alpha_person, alpha_no_person, uncertain=False):
-    print(uncertain)
     if uncertain:
-        return 0   # slow decay toward 0, preserves history
+        return 0
     else:
         alpha = alpha_person if new_score >= 0 else alpha_no_person
-        
-        sss = "ns:" + str(new_score) + ", os: " + str(old_score) + ", alpha: " + str(alpha) + ", s: " + str(alpha * new_score + (1 - alpha) * old_score)
-        rospy.loginfo(sss)
-
-        return alpha * new_score + (1 - alpha) * old_score
+    return alpha * new_score + (1 - alpha) * old_score
 
 def car_depth_interval(c, robot_x, robot_y, car_length_m):
     d_ref = c.distance_to(robot_x, robot_y)
@@ -456,70 +460,51 @@ def car_near_point(c, robot_x, robot_y, car_length_m):
     d_other = math.hypot(ox - robot_x, oy - robot_y)
     return (c.x, c.y) if d_ref <= d_other else (ox, oy)
 
-def driver_zone_corners(c: 'MappedCar', car_width_m: float,
-                        driver_zone_length_m: float):
+
+def point_in_driver_half(c: MappedCar, px: float, py: float,
+                         car_length_m: float) -> bool:
     """
-    World-frame corners of the rectangle where the driver sits:
-      - one long edge at the car's reference point (c.x, c.y)
-      - the other long edge shifted `driver_zone_length_m` TOWARDS the
-        car's center/other end, along its orientation axis
-      - width `car_width_m`, centered on that length axis
-    Returns None if the car has no orientation_rad (rectangle undefined,
-    e.g. cars loaded without a heading) — caller must decide how to
-    treat that (we treat it as "not visible", see is_driver_zone_in_fov).
+    True if the world point (px, py) — the point the camera ray is
+    currently looking at, see project_detection_to_world() — falls on
+    the FRONT half of the car's body (i.e. the half of the car that
+    contains the driver).
+
+    The car body is modeled as a segment of length car_length_m: the
+    stored (c.x, c.y) is its front end, and orientation_rad points from
+    back to front (same convention already used by car_depth_interval /
+    car_near_point). Splitting that segment down the middle gives a
+    front half (driver side) and a back half. A car with no known
+    orientation can't be split into halves at all, so it never counts
+    as "looking at the driver half".
     """
     if c.orientation_rad is None:
-        return None
-
-    # unit vector along the car's length axis, pointing from the
-    # reference point TOWARDS the car's center/other end — matches the
-    # same convention used in car_near_point()/car_depth_interval()
-    ux, uy = -math.cos(c.orientation_rad), -math.sin(c.orientation_rad)
-    # perpendicular unit vector, for width
-    wx, wy = -uy, ux
-
-    half_w = car_width_m / 2.0
-    p1 = (c.x, c.y)
-    p2 = (c.x + driver_zone_length_m * ux, c.y + driver_zone_length_m * uy)
-
-    return [
-        (p1[0] + half_w * wx, p1[1] + half_w * wy),
-        (p1[0] - half_w * wx, p1[1] - half_w * wy),
-        (p2[0] - half_w * wx, p2[1] - half_w * wy),
-        (p2[0] + half_w * wx, p2[1] + half_w * wy),
-    ]
-
-
-def bearing_to_point(robot_x, robot_y, robot_theta, side, px, py):
-    """
-    INVERSE of project_detection_to_world: given a world point, returns
-    the bearing angle (radians) that WOULD have produced it under the
-    same side/robot_theta convention. bearing == 0 is dead-center of the
-    FOV; abs(bearing) <= radians(hfov_deg/2) means "inside the FOV".
-    """
-    side_offset = math.pi / 2 if side == "left" else -math.pi / 2
-    world_angle = math.atan2(py - robot_y, px - robot_x)
-    delta = world_angle - (robot_theta + side_offset)
-    delta = math.atan2(math.sin(delta), math.cos(delta))   # normalize
-    return -delta if side == "left" else delta
-
-
-def is_driver_zone_in_fov(c, robot_x, robot_y, robot_theta, side, hfov_deg,
-                          car_width_m, driver_zone_length_m):
-    """
-    True only if the ENTIRE driver-zone rectangle falls inside the
-    camera's angular FOV as seen from the robot's current pose. If the
-    car has no orientation_rad, the rectangle can't be localized, so we
-    conservatively return False (treat as uncertain/not visible).
-    """
-    corners = driver_zone_corners(c, car_width_m, driver_zone_length_m)
-    if corners is None:
         return False
-    half_fov = math.radians(hfov_deg / 2.0)
-    return all(
-        abs(bearing_to_point(robot_x, robot_y, robot_theta, side, px, py)) <= half_fov
-        for px, py in corners
-    )
+    ux, uy = math.cos(c.orientation_rad), math.sin(c.orientation_rad)
+    back_x = c.x - car_length_m * ux
+    back_y = c.y - car_length_m * uy
+    # signed distance of (px, py) along the back->front axis, measured
+    # from the back end
+    along = (px - back_x) * ux + (py - back_y) * uy
+    return along >= (car_length_m / 2.0)
+
+
+def is_looking_at_driver_half(det_row, depth_m, c: MappedCar,
+                              robot_x, robot_y, robot_theta,
+                              side, img_width, hfov_deg,
+                              car_length_m) -> bool:
+    """
+    Projects the current viewing ray (using the EXACT same `angle`
+    geometry as project_detection_to_world) out to depth_m and checks
+    whether the resulting world point lands on the driver half of car c.
+    det_row only needs its first 4 entries (x1, y1, x2, y2); a real
+    detection box (car or person) can be passed directly, or a synthetic
+    box centered on the image (u = img_width/2) can be used to test the
+    camera boresight itself when no detection box is available.
+    """
+    px, py = project_detection_to_world(
+        det_row, depth_m, robot_x, robot_y, robot_theta,
+        side, img_width, hfov_deg=hfov_deg)
+    return point_in_driver_half(c, px, py, car_length_m)
 
 # ============================================================================
 # Data association node — car-oriented
@@ -537,9 +522,9 @@ class DataAssociationNode:
         img_size = rospy.get_param("~img_size", 640)
         device = rospy.get_param("~device", "cuda")
         self.gps_range_m = rospy.get_param("~gps_range_m", 4.5)
-        self.max_depth_m = rospy.get_param("~max_depth_m", 4.5)
+        self.max_depth_m = rospy.get_param("~max_depth_m", 4.0)
         self.side = rospy.get_param("~side", "right")
-        self.hfov_deg = rospy.get_param("~hfov_deg", 69.0)
+        self.hfov_deg = rospy.get_param("~hfov_deg", 60.0)
         #self.max_bearing_deg = rospy.get_param("~max_bearing_deg", 15.0)
         #self.assoc_max_m = rospy.get_param("~assoc_max_m", 1.0)
         #self.front_offset_m = rospy.get_param("~front_offset_m", 3.7)  
@@ -561,7 +546,6 @@ class DataAssociationNode:
         self.close_range_m = rospy.get_param("~close_range_m", 1.75)
         self.person_depth_tolerance_m = rospy.get_param("~person_depth_tolerance_m", 2.0)
         self.car_width_m = rospy.get_param("~car_width_m", 1.8)
-        self.driver_zone_length_m = rospy.get_param("~driver_zone_length_m", 1.5)
 
         self.cars_lock = threading.Lock()
         self.cars: List[MappedCar] = []
@@ -604,17 +588,28 @@ class DataAssociationNode:
                                          Image, queue_size=2)
         self.bridge = CvBridge()
 
-        # --- synchronized RGB + depth (same style as car_mapper_node)
-        rgb_sub = message_filters.Subscriber(rgb_topic, Image)
-        depth_sub = message_filters.Subscriber(depth_topic, Image)
-        sync = message_filters.ApproximateTimeSynchronizer(
-            [rgb_sub, depth_sub], queue_size=10, slop=0.05)
-        sync.registerCallback(self.step)
+        # --- independent RGB + depth (no cross-topic synchronization):
+        # every RGB frame triggers a detection step immediately; the depth
+        # subscriber just caches whatever the most recently received depth
+        # frame is, with no attempt to time-align it to the RGB frame that
+        # triggered the step. This decouples the detection rate from depth
+        # arrival/jitter, at the cost of occasionally pairing an RGB frame
+        # with a slightly stale (or, before the first depth frame arrives,
+        # entirely absent) depth frame.
+        self._depth_lock = threading.Lock()
+        self._latest_depth_msg: Optional[Image] = None
+        rospy.Subscriber(depth_topic, Image, self._depth_cb, queue_size=1)
+        rospy.Subscriber(rgb_topic, Image, self.step, queue_size=1)
 
         rospy.loginfo("[Assoc] node ready (car-oriented, source=%s).",
                       self.car_map_source)
 
     # --------------------------------------------------------------- inputs
+    def _depth_cb(self, msg: Image):
+        """Cache the most recent depth frame; not synchronized to RGB."""
+        with self._depth_lock:
+            self._latest_depth_msg = msg
+
     def _gps_cb(self, msg: Pose2D):
         with self._gps_lock:
             self._gx, self._gy, self._gtheta = msg.x, msg.y, msg.theta
@@ -624,8 +619,7 @@ class DataAssociationNode:
         """Returns (x, y, theta, ok)."""
         if self.gps is not None:
             x, y, theta, quality, stamp = self.gps.get_state()
-            ok = (x is not None and quality >= self.min_quality
-                  and (rospy.Time.now() - stamp).to_sec() < 1.0)
+            ok = x is not None and (rospy.Time.now() - stamp).to_sec() < 1.0 and quality >= self.min_quality
             return x, y, theta, ok
         with self._gps_lock:
             ok = (self._gx is not None
@@ -686,18 +680,31 @@ class DataAssociationNode:
             self.scores = new_scores
 
     # ----------------------------------------------------------------- step
-    def step(self, rgb_msg: Image, depth_msg: Image):
+    def step(self, rgb_msg: Image):
         """
-        One iteration k. Wrapped in try/except: any exception in the
-        processing below is logged with a full traceback via rospy.logerr
-        rather than potentially failing silently — this was added
-        specifically because a prior symptom (front cars stopped matching
-        right after a back car failed to match) could not be conclusively
-        explained by the reachability bug alone, and a swallowed exception
-        was the leading alternative explanation. If this fires, the
-        traceback will show up in the node's log output.
+        One iteration k, triggered directly by each incoming RGB frame
+        (no cross-topic synchronization with depth — see the subscriber
+        setup in __init__). We just grab whatever depth frame is currently
+        cached; if none has arrived yet we skip this frame rather than
+        blocking on it.
+
+        Wrapped in try/except: any exception in the processing below is
+        logged with a full traceback via rospy.logerr rather than
+        potentially failing silently — this was added specifically because
+        a prior symptom (front cars stopped matching right after a back
+        car failed to match) could not be conclusively explained by the
+        reachability bug alone, and a swallowed exception was the leading
+        alternative explanation. If this fires, the traceback will show up
+        in the node's log output.
         """
         try:
+            with self._depth_lock:
+                depth_msg = self._latest_depth_msg
+            if depth_msg is None:
+                rospy.logwarn_throttle(
+                    5, "[Assoc] no depth frame received yet; skipping "
+                       "this RGB frame")
+                return
             self._step_impl(rgb_msg, depth_msg)
         except Exception:
             rospy.logerr("[Assoc] EXCEPTION in step():\n%s",
@@ -723,16 +730,6 @@ class DataAssociationNode:
         depth = self.bridge.imgmsg_to_cv2(depth_msg, "passthrough")
         img_w = rgb.shape[1]
 
-        # Per-car "is the driver zone actually inside the current FOV?"
-        # computed once per step, only for visitable cars — unvisitable
-        # cars keep their existing forced-0 behavior untouched.
-        driver_zone_visible = {
-            c.id: is_driver_zone_in_fov(
-                c, rx, ry, rtheta, self.side, self.hfov_deg,
-                self.car_width_m, self.driver_zone_length_m)
-            for c in cars_snapshot if c.visitable
-        }
-
         det = self.yolo.detect(rgb)
         cars_det = [d for d in det if int(d[5]) in COCO_CAR_CLASSES]
         persons = [d for d in det if int(d[5]) == COCO_PERSON]
@@ -741,7 +738,8 @@ class DataAssociationNode:
         gated = []
         for c in cars_det:
             z = get_box_median_depth(depth, *c[:4])
-            if z is not None and z <= self.max_depth_m:
+            # print(c[2]*c[3] / float(rgb.shape[0]*rgb.shape[1]))
+            if z is not None and z <= self.max_depth_m and (c[2]*c[3] / float(rgb.shape[0]*rgb.shape[1])) >= 0.3:
                 gated.append((c, z))
         """
         if not gated:
@@ -788,8 +786,15 @@ class DataAssociationNode:
 
             car_conf = float(car[4])
             is_unvisitable = not target.visitable
-            fov_blocks_view = (target.visitable
-                               and not driver_zone_visible.get(target.id, False))
+
+            # FOV gate: project THIS car detection's own viewing ray (the
+            # same `angle` used inside project_detection_to_world) out to
+            # its measured depth, and check whether that point lands on
+            # the driver half (front half) of the matched car's body.
+            driver_half_ok = is_looking_at_driver_half(
+                car, car_depth, target, rx, ry, rtheta, self.side, img_w,
+                self.hfov_deg, self.car_length_m)
+            fov_blocks_view = target.visitable and not driver_half_ok
             uncertain = fov_blocks_view or is_unvisitable
 
             if uncertain and best_person_conf is None:
@@ -806,14 +811,15 @@ class DataAssociationNode:
                     uncertain=uncertain)
                 score_now = self.scores[0, target.score_col]
 
-            rospy.loginfo(
-                "[Assoc] car %d (visitable=%r, driver_fov=%r): score=%+.2f "
-                "(car=%.2f person=%s depth=%.2fm car_pos=(%.2f,%.2f) "
-                "match_err=%.2fm)",
-                target.id, target.visitable,
-                driver_zone_visible.get(target.id, "n/a"), score_now, car_conf,
-                f"{best_person_conf:.2f}" if best_person_conf else "none",
-                car_depth, target.x, target.y, match_quality)
+            if target.id == 10:
+                rospy.loginfo(
+                    "[Assoc] car %d (visitable=%r, driver_half=%r): score=%+.2f "
+                    "(car=%.2f person=%s depth=%.2fm car_pos=(%.2f,%.2f) "
+                    "match_err=%.2fm)",
+                    target.id, target.visitable, driver_half_ok, score_now,
+                    car_conf,
+                    f"{best_person_conf:.2f}" if best_person_conf else "none",
+                    car_depth, target.x, target.y, match_quality)
 
             last_target = target
             if best_person_conf is not None:
@@ -830,22 +836,35 @@ class DataAssociationNode:
             if near_car.id in matched_ids:
                 continue
 
-            if near_car.visitable and not driver_zone_visible.get(near_car.id, False):
-                with self.cars_lock:
-                    old = self.scores[0, near_car.score_col]
-                    self.scores[0, near_car.score_col] = update_score(
-                        old, 0.0, self.ema_alpha_person, self.ema_alpha_no_person,
-                        uncertain=True)
-                    score_now = self.scores[0, near_car.score_col]
-                rospy.loginfo(
-                    "[Assoc] car %d: FALLBACK skipped, driver zone outside "
-                    "FOV — decaying toward 0 (score=%+.2f)",
-                    near_car.id, score_now)
-                last_target = near_car
-                continue
-
             near_x, near_y = car_near_point(near_car, rx, ry, self.car_length_m)
             expected_dist = math.hypot(near_x - rx, near_y - ry)
+
+            if near_car.visitable:
+                # No car box was detected for this car, so there's no real
+                # detection to project. Instead we test the camera
+                # BORESIGHT itself: a synthetic box centered in the image
+                # (u = img_w/2 -> bearing = 0) fed through the exact same
+                # project_detection_to_world()/angle geometry, at the
+                # car's expected depth. This tells us whether the camera
+                # is currently pointed at the driver half of the car at all.
+                center_det = (img_w / 2.0, 0.0, img_w / 2.0, 0.0)
+                driver_half_ok = is_looking_at_driver_half(
+                    center_det, expected_dist, near_car, rx, ry, rtheta,
+                    self.side, img_w, self.hfov_deg, self.car_length_m)
+                if not driver_half_ok:
+                    with self.cars_lock:
+                        old = self.scores[0, near_car.score_col]
+                        self.scores[0, near_car.score_col] = update_score(
+                            old, 0.0, self.ema_alpha_person,
+                            self.ema_alpha_no_person, uncertain=True)
+                        score_now = self.scores[0, near_car.score_col]
+                    rospy.loginfo(
+                        "[Assoc] car %d: FALLBACK skipped, camera not "
+                        "looking at driver half of car — decaying toward "
+                        "0 (score=%+.2f)", near_car.id, score_now)
+                    last_target = near_car
+                    continue
+
             best_person_conf = None
             for p in persons:
                 pz = get_box_median_depth(depth, *p[:4])
@@ -860,7 +879,6 @@ class DataAssociationNode:
             if best_person_conf is None:
                 continue
 
-            rospy.loginfo("ciao")
             new = +best_person_conf
             with self.cars_lock:
                 old = self.scores[0, near_car.score_col]

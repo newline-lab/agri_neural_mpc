@@ -489,7 +489,7 @@ class DataAssociationNode:
         self._ox, self._oy, self._zone_n, self._zone_l = utm.from_latlon(
             origin_lat, origin_lon)
         self.ema_alpha_person = rospy.get_param("~ema_alpha_person", 0.6)
-        self.ema_alpha_no_person = rospy.get_param("~ema_alpha_no_person", 0.1)
+        self.ema_alpha_no_person = rospy.get_param("~ema_alpha_no_person", 0.05)
         self.close_range_m = rospy.get_param("~close_range_m", 1.75)
         self.person_depth_tolerance_m = rospy.get_param("~person_depth_tolerance_m", 2.0)
 

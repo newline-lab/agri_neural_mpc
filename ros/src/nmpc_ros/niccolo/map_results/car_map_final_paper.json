@@ -1,0 +1,228 @@
+{
+  "cars": [
+    {
+      "id": 0,
+      "x": 60.315,
+      "y": -18.559,
+      "orientation_rad": -1.7592,
+      "visitable": false
+    },
+    {
+      "id": 1,
+      "x": 57.466,
+      "y": -17.844,
+      "orientation_rad": -1.7317,
+      "visitable": true
+    },
+    {
+      "id": 2,
+      "x": 43.52,
+      "y": -15.492,
+      "orientation_rad": -1.6984,
+      "visitable": true
+    },
+    {
+      "id": 3,
+      "x": 40.267,
+      "y": -14.99,
+      "orientation_rad": -1.6738,
+      "visitable": false
+    },
+    {
+      "id": 4,
+      "x": 38.498,
+      "y": -10.526,
+      "orientation_rad": 1.4195,
+      "visitable": true
+    },
+    {
+      "id": 5,
+      "x": 35.534,
+      "y": -9.807,
+      "orientation_rad": 1.4752,
+      "visitable": true
+    },
+    {
+      "id": 6,
+      "x": 31.555,
+      "y": -13.726,
+      "orientation_rad": -1.7198,
+      "visitable": false
+    },
+    {
+      "id": 7,
+      "x": 28.123,
+      "y": -13.144,
+      "orientation_rad": -1.7755,
+      "visitable": false
+    },
+    {
+      "id": 8,
+      "x": 24.501,
+      "y": -12.467,
+      "orientation_rad": -1.7464,
+      "visitable": false
+    },
+    {
+      "id": 9,
+      "x": 21.755,
+      "y": -12.076,
+      "orientation_rad": -1.6839,
+      "visitable": false
+    },
+    {
+      "id": 10,
+      "x": 18.473,
+      "y": -11.266,
+      "orientation_rad": -1.7315,
+      "visitable": false
+    },
+    {
+      "id": 11,
+      "x": 16.229,
+      "y": -6.668,
+      "orientation_rad": 1.4348,
+      "visitable": true
+    },
+    {
+      "id": 12,
+      "x": 12.665,
+      "y": -6.024,
+      "orientation_rad": 1.4063,
+      "visitable": true
+    },
+    {
+      "id": 13,
+      "x": 9.21,
+      "y": 3.855,
+      "orientation_rad": 1.6249,
+      "visitable": true
+    },
+    {
+      "id": 14,
+      "x": 11.215,
+      "y": -0.408,
+      "orientation_rad": -1.7292,
+      "visitable": true
+    },
+    {
+      "id": 15,
+      "x": 13.52,
+      "y": -0.659,
+      "orientation_rad": -1.7272,
+      "visitable": true
+    },
+    {
+      "id": 16,
+      "x": 16.952,
+      "y": -1.528,
+      "orientation_rad": -1.7404,
+      "visitable": true
+    },
+    {
+      "id": 17,
+      "x": 20.687,
+      "y": 1.774,
+      "orientation_rad": 1.4339,
+      "visitable": false
+    },
+    {
+      "id": 18,
+      "x": 22.906,
+      "y": -2.158,
+      "orientation_rad": -1.6902,
+      "visitable": true
+    },
+    {
+      "id": 19,
+      "x": 26.551,
+      "y": 0.39,
+      "orientation_rad": 1.3901,
+      "visitable": false
+    },
+    {
+      "id": 20,
+      "x": 30.096,
+      "y": -0.041,
+      "orientation_rad": 1.3499,
+      "visitable": false
+    },
+    {
+      "id": 21,
+      "x": 32.857,
+      "y": -0.689,
+      "orientation_rad": 1.3957,
+      "visitable": false
+    },
+    {
+      "id": 22,
+      "x": 35.939,
+      "y": -0.784,
+      "orientation_rad": 1.3789,
+      "visitable": true
+    },
+    {
+      "id": 23,
+      "x": 41.12,
+      "y": -1.463,
+      "orientation_rad": 1.3801,
+      "visitable": true
+    },
+    {
+      "id": 24,
+      "x": 45.628,
+      "y": -6.078,
+      "orientation_rad": -1.7281,
+      "visitable": true
+    },
+    {
+      "id": 25,
+      "x": 58.889,
+      "y": -2.105,
+      "orientation_rad": 1.4896,
+      "visitable": true
+    },
+    {
+      "id": 26,
+      "x": 55.535,
+      "y": 5.729,
+      "orientation_rad": -1.7156,
+      "visitable": true
+    },
+    {
+      "id": 27,
+      "x": 45.914,
+      "y": 7.179,
+      "orientation_rad": -1.6783,
+      "visitable": true
+    },
+    {
+      "id": 28,
+      "x": 41.833,
+      "y": 12.092,
+      "orientation_rad": 1.4591,
+      "visitable": true
+    },
+    {
+      "id": 29,
+      "x": 24.303,
+      "y": 15.178,
+      "orientation_rad": 1.3773,
+      "visitable": true
+    },
+    {
+      "id": 30,
+      "x": 18.672,
+      "y": 3.671,
+      "orientation_rad": -1.6271,
+      "visitable": true
+    },
+    {
+      "id": 31,
+      "x": 14.301,
+      "y": 4.337,
+      "orientation_rad": -1.7369,
+      "visitable": true
+    }
+  ]
+}

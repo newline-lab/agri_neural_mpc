@@ -290,7 +290,8 @@ class NeuralMPCHusky:
     def bayes(prior, likelihood):
         unnorm = prior * likelihood
         norm = ca.repmat(ca.sum2(unnorm), 1, 2)
-        return unnorm / norm
+        # return unnorm / norm
+        return ca.fmax(unnorm / norm, 0.01)
 
     @staticmethod
     def entropy_f(num_targets):
@@ -890,8 +891,12 @@ class NeuralMPCHusky:
                     rospy.sleep(0.01)
                 
                 scores = self.latest_trees_scores.copy()
-                if mpciter % 2 == 0: 
+                if mpciter % 1 == 0: 
                     self.beliefs_k = self.bayes(self.beliefs_k, ca.DM(scores))
+
+                aaa=ca.DM(scores)
+                print(self.beliefs_k[12], aaa[12])
+                
 
                 # Invio dei marker geometrici per la visualizzazione grafica (Rviz)
                 tree_markers_msg = create_tree_markers(self.trees_pos, self.beliefs_k.full())

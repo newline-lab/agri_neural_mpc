@@ -1,0 +1,20 @@
+<launch>
+  <node pkg="nmpc_ros" type="car_data_association_node_final.py" name="car_data_association_node_final" output="screen">
+    <!-- Parametri privati del nodo -->
+    <param name="weights" type="string" value="/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/yolov7-ros/weights/yolov7.pt" />
+    <param name="gps_source" type="string" value="topic" />
+    <param name="gps_topic" type="string" value="/gps_data" />
+    <param name="car_map_source" type="string" value="file" />
+    <param name="car_map_file" type="string" value="/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/nmpc_ros/niccolo/map_results/car_map_final.json" />
+    <param name="rgb_topic" type="string" value="/camera/color/image_raw/compressed" />
+    <param name="depth_topic" type="string" value="/camera/aligned_depth_to_color/image_raw" />
+    <param name="side" type="string" value="left" />
+  </node>
+</launch>
+
+<!-- 
+
+rosbag record  /camera/aligned_depth_to_color/camera_info  /camera/aligned_depth_to_color/image_raw /camera/color/camera_info /camera/color/image_raw/compressed /camera/color/image_raw/compressed/parameter_descriptions /camera/color/image_raw/compressed/parameter_updates /gps/fix /gps/rtk_quality /gps_data /rosout /data_association/debug_image -O nome.bag
+
+
+-->

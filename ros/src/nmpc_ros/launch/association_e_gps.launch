@@ -15,7 +15,25 @@
   <node pkg="nmpc_ros" type="GPSrtk_node.py" name="GPSrtk_node" output="screen" />
 
   <!-- RealSense Camera (Incluso tramite file .launch esterno) -->
+  <!-- RealSense Camera -->
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="align_depth" value="true" />
+
+    <!-- Imposta larghezza, altezza e FPS per il Colore -->
+    <arg name="color_width" value="640" />
+    <arg name="color_height" value="480" />
+    <arg name="color_fps" value="15" />
+
+    <!-- Imposta larghezza, altezza e FPS per il Depth -->
+    <arg name="depth_width" value="640" />
+    <arg name="depth_height" value="480" />
+    <arg name="depth_fps" value="15" />
   </include>
 </launch>
+
+<!-- 
+
+rosbag record  /camera/aligned_depth_to_color/camera_info  /camera/aligned_depth_to_color/image_raw /camera/color/camera_info /camera/color/image_raw/compressed /camera/color/image_raw/compressed/parameter_descriptions /camera/color/image_raw/compressed/parameter_updates /gps/fix /gps/rtk_quality /gps_data /rosout /data_association/debug_image -O nome.bag
+
+
+-->

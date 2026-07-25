@@ -184,9 +184,9 @@ class GpsRtkBackend:
         self.user = rospy.get_param("~ntrip_user", "newline")
         self.password = rospy.get_param("~ntrip_pass", "Newline!")
 
-        self.pub_pose = rospy.Publisher("/gps_data", Pose2D, queue_size=1)
+        self.pub_pose = rospy.Publisher("/gps_data", Pose2D, queue_size=10)
         self.pub_quality = rospy.Publisher("/gps/rtk_quality", Int32,
-                                           queue_size=1)
+                                           queue_size=10)
 
         self.ser = pyserial.Serial(port, baud, timeout=1)
         self.ser.reset_input_buffer()
@@ -434,7 +434,7 @@ def match_detection_to_car(car_det, car_depth,
 
 def update_score(old_score, new_score, alpha_person, alpha_no_person, uncertain=False):
     if uncertain:
-        return 0 
+        return 0
     else:
         alpha = alpha_person if new_score >= 0 else alpha_no_person
     return alpha * new_score + (1 - alpha) * old_score
@@ -493,36 +493,18 @@ def is_looking_at_driver_half(det_row, depth_m, c: MappedCar,
                               side, img_width, hfov_deg,
                               car_length_m) -> bool:
     """
-    Projects the viewing rays through BOTH edges of the detection box
-    (using the EXACT same `angle` geometry as project_detection_to_world)
-    out to depth_m, and checks whether EITHER resulting world point lands
-    on the driver half of car c. det_row only needs its first 4 entries
-    (x1, y1, x2, y2); a real detection box (car or person) can be passed
-    directly, or a synthetic zero-width box centered on the image
-    (x1 == x2 == img_width/2) can be used to test the camera boresight
-    itself when no detection box is available — in that degenerate case
-    this reduces to the single center-point test.
-
-    Using both edges (instead of just the box center) matters for a
-    broadside view: the box then spans nearly the whole car, so its
-    CENTER lands right on the 50/50 front/back split by construction,
-    and depth/bearing noise can randomly tip it to "back half" even
-    though the front half is clearly in view too. Testing both edges in
-    WORLD space (scaled by the measured depth) fixes this without being
-    fooled by a close-up view of a small physical patch near the back of
-    the car: at short depth the same pixel span maps to a small physical
-    span, so it still won't reach into the front half unless it actually
-    does.
+    Projects the current viewing ray (using the EXACT same `angle`
+    geometry as project_detection_to_world) out to depth_m and checks
+    whether the resulting world point lands on the driver half of car c.
+    det_row only needs its first 4 entries (x1, y1, x2, y2); a real
+    detection box (car or person) can be passed directly, or a synthetic
+    box centered on the image (u = img_width/2) can be used to test the
+    camera boresight itself when no detection box is available.
     """
-    x1, _, x2, _ = det_row[:4]
-    p1 = project_detection_to_world(
-        (x1, 0, x1, 0), depth_m, robot_x, robot_y, robot_theta,
+    px, py = project_detection_to_world(
+        det_row, depth_m, robot_x, robot_y, robot_theta,
         side, img_width, hfov_deg=hfov_deg)
-    p2 = project_detection_to_world(
-        (x2, 0, x2, 0), depth_m, robot_x, robot_y, robot_theta,
-        side, img_width, hfov_deg=hfov_deg)
-    return (point_in_driver_half(c, *p1, car_length_m) or
-            point_in_driver_half(c, *p2, car_length_m))
+    return point_in_driver_half(c, px, py, car_length_m)
 
 # ============================================================================
 # Data association node — car-oriented
@@ -539,8 +521,8 @@ class DataAssociationNode:
         iou_thresh = rospy.get_param("~iou_thresh", 0.45)
         img_size = rospy.get_param("~img_size", 640)
         device = rospy.get_param("~device", "cuda")
-        self.gps_range_m = rospy.get_param("~gps_range_m", 5.0)
-        self.max_depth_m = rospy.get_param("~max_depth_m", 4.5)
+        self.gps_range_m = rospy.get_param("~gps_range_m", 4.5)
+        self.max_depth_m = rospy.get_param("~max_depth_m", 4.0)
         self.side = rospy.get_param("~side", "right")
         self.hfov_deg = rospy.get_param("~hfov_deg", 60.0)
         #self.max_bearing_deg = rospy.get_param("~max_bearing_deg", 15.0)
@@ -552,10 +534,9 @@ class DataAssociationNode:
             raise ValueError(f"~side must be 'left' or 'right', got {self.side!r}")
         self.min_quality = rospy.get_param("~min_rtk_quality", 4)
         #self.ema_alpha = rospy.get_param("~ema_alpha", 1.0)
-        #rgb_topic = rospy.get_param("~rgb_topic", "/cam_up/color/image_raw")
-        rgb_topic = rospy.get_param("~rgb_topic", "/cam_up/color/image_raw/compressed")
+        rgb_topic = rospy.get_param("~rgb_topic", "/camera/color/image_raw/compressed")
         depth_topic = rospy.get_param(
-            "~depth_topic", "/cam_up/aligned_depth_to_color/image_raw")
+            "~depth_topic", "/camera/aligned_depth_to_color/image_raw")
         origin_lat = rospy.get_param("~origin_lat", 41.85626425142204)
         origin_lon = rospy.get_param("~origin_lon", 12.469038428190489)
         self._ox, self._oy, self._zone_n, self._zone_l = utm.from_latlon(
@@ -593,18 +574,18 @@ class DataAssociationNode:
             self._gx = self._gy = self._gtheta = None
             self._gstamp = rospy.Time(0)
             rospy.Subscriber(rospy.get_param("~gps_topic", "/gps_data"),
-                             Pose2D, self._gps_cb, queue_size=1)
+                             Pose2D, self._gps_cb, queue_size=10)
 
         # --- detector
         self.yolo = YoloV7(weights, conf_thresh, iou_thresh, img_size, device)
 
         # --- pubs
         self.pub_scores = rospy.Publisher("/parking/scores",
-                                          Float32MultiArray, queue_size=1)
+                                          Float32MultiArray, queue_size=5)
         self.pub_scores_json = rospy.Publisher("/parking/scores_json",
-                                               String, queue_size=1)
+                                               String, queue_size=5)
         self.pub_debug = rospy.Publisher("/data_association/debug_image",
-                                         Image, queue_size=1)
+                                         Image, queue_size=2)
         self.bridge = CvBridge()
 
         # --- independent RGB + depth (no cross-topic synchronization):
@@ -618,7 +599,6 @@ class DataAssociationNode:
         self._depth_lock = threading.Lock()
         self._latest_depth_msg: Optional[Image] = None
         rospy.Subscriber(depth_topic, Image, self._depth_cb, queue_size=1)
-        #rospy.Subscriber(rgb_topic, Image, self.step, queue_size=1)
         rospy.Subscriber(rgb_topic, CompressedImage, self.step, queue_size=1)
 
         rospy.loginfo("[Assoc] node ready (car-oriented, source=%s).",
@@ -700,7 +680,6 @@ class DataAssociationNode:
             self.scores = new_scores
 
     # ----------------------------------------------------------------- step
-    #def step(self, rgb_msg: Image):
     def step(self, rgb_msg: CompressedImage):
         """
         One iteration k, triggered directly by each incoming RGB frame
@@ -731,7 +710,6 @@ class DataAssociationNode:
             rospy.logerr("[Assoc] EXCEPTION in step():\n%s",
                         traceback.format_exc())
 
-    #def _step_impl(self, rgb_msg: Image, depth_msg: Image):
     def _step_impl(self, rgb_msg: CompressedImage, depth_msg: Image):
         with self.cars_lock:
             cars_snapshot = list(self.cars)
@@ -748,8 +726,7 @@ class DataAssociationNode:
                    "and heading)", self.min_quality)
             return
 
-        rgb = self.bridge.compressed_imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
-        #rgb = self.bridge.imgmsg_to_cv2(rgb_msg, "bgr8")
+        rgb = self.bridge.compressed_imgmsg_to_cv2(rgb_msg, "bgr8")
         depth = self.bridge.imgmsg_to_cv2(depth_msg, "passthrough")
         img_w = rgb.shape[1]
 
@@ -762,8 +739,7 @@ class DataAssociationNode:
         for c in cars_det:
             z = get_box_median_depth(depth, *c[:4])
             # print(c[2]*c[3] / float(rgb.shape[0]*rgb.shape[1]))
-            # print( ((c[3] - c[1])*(c[2] - c[0])) / float(rgb.shape[0]*rgb.shape[1]) )
-            if z is not None and z <= self.max_depth_m and ( ((c[3] - c[1])*(c[2] - c[0])) / float(rgb.shape[0]*rgb.shape[1]) ) >= 0.3:
+            if z is not None and z <= self.max_depth_m and ((c[2] - c[0]) * (c[3] - c[1]) / float(rgb.shape[0]*rgb.shape[1])) >= 0.3:
                 gated.append((c, z))
         """
         if not gated:
@@ -835,7 +811,7 @@ class DataAssociationNode:
                     uncertain=uncertain)
                 score_now = self.scores[0, target.score_col]
 
-            if target.id == 12:
+            if target.id == 10:
                 rospy.loginfo(
                     "[Assoc] car %d (visitable=%r, driver_half=%r): score=%+.2f "
                     "(car=%.2f person=%s depth=%.2fm car_pos=(%.2f,%.2f) "

@@ -891,7 +891,7 @@ class NeuralMPCHusky:
                     rospy.sleep(0.01)
                 
                 scores = self.latest_trees_scores.copy()
-                if mpciter % 1 == 0: 
+                if mpciter % 2 == 0: 
                     self.beliefs_k = self.bayes(self.beliefs_k, ca.DM(scores))
 
                 aaa=ca.DM(scores)

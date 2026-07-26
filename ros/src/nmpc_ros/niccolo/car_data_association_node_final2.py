@@ -120,6 +120,9 @@ class MappedCar:
 
         self.score_col: int = 0
 
+        self.person_grace_counter: int = 0
+        self.last_person_conf: float = 0.0
+
     def distance_to(self, rx, ry):
         return math.hypot(self.x - rx, self.y - ry)
 
@@ -533,6 +536,11 @@ class DataAssociationNode:
         rospy.init_node("data_association_node")
 
         # --- params
+        self.person_depth_tolerance_m = rospy.get_param("~person_depth_tolerance_m", 2.0)
+        self.car_width_m = rospy.get_param("~car_width_m", 1.8)
+        # Quanti frame aspettare prima di dichiarare la persona "persa"
+        self.person_patience = rospy.get_param("~person_patience", 30)
+
         weights = rospy.get_param("~weights", '/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/yolov7-ros/weights/yolov7.pt')
         self.cont_thresh = rospy.get_param("~containment_thresh", 0.7)
         conf_thresh = rospy.get_param("~conf_thresh", 0.4)
@@ -763,7 +771,7 @@ class DataAssociationNode:
             z = get_box_median_depth(depth, *c[:4])
             # print(c[2]*c[3] / float(rgb.shape[0]*rgb.shape[1]))
             # print( ((c[3] - c[1])*(c[2] - c[0])) / float(rgb.shape[0]*rgb.shape[1]) )
-            if z is not None and z <= self.max_depth_m and ( ((c[3] - c[1])*(c[2] - c[0])) / float(rgb.shape[0]*rgb.shape[1]) ) >= 0.3:
+            if z is not None and z <= self.max_depth_m and ( ((c[3] - c[1])*(c[2] - c[0])) / float(rgb.shape[0]*rgb.shape[1]) ) >= 0.25:
                 gated.append((c, z))
         """
         if not gated:
@@ -807,6 +815,17 @@ class DataAssociationNode:
                     pc = float(p[4])
                     if best_person_conf is None or pc > best_person_conf:
                         best_person_conf = pc
+
+            # --- LOGICA CONTATORE MEMORIA PERSONA ---
+            if best_person_conf is not None:
+                # Persona vista: ricarichiamo il contatore e salviamo la confidenza
+                target.person_grace_counter = self.person_patience
+                target.last_person_conf = best_person_conf
+            elif target.person_grace_counter > 0:
+                # Persona NON vista, ma abbiamo ancora memoria: riutilizziamo l'ultima nota
+                target.person_grace_counter -= 1
+                best_person_conf = target.last_person_conf
+            # ----------------------------------------
 
             car_conf = float(car[4])
             is_unvisitable = not target.visitable
@@ -900,8 +919,18 @@ class DataAssociationNode:
                 if best_person_conf is None or pc > best_person_conf:
                     best_person_conf = pc
 
-            if best_person_conf is None:
+                
+            # --- LOGICA CONTATORE MEMORIA PERSONA (FALLBACK) ---
+            if best_person_conf is not None:
+                near_car.person_grace_counter = self.person_patience
+                near_car.last_person_conf = best_person_conf
+            elif near_car.person_grace_counter > 0:
+                near_car.person_grace_counter -= 1
+                best_person_conf = near_car.last_person_conf
+            else:
+                # Non c'è la persona e la memoria è scaduta
                 continue
+            # ---------------------------------------------------
 
             new = +best_person_conf
             with self.cars_lock:

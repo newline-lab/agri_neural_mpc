@@ -895,9 +895,11 @@ class NeuralMPCHusky:
                     self.beliefs_k = self.bayes(self.beliefs_k, ca.DM(scores))
 
                 aaa=ca.DM(scores)
-                print(self.beliefs_k[12], aaa[12])
+                print(12, self.beliefs_k[12], aaa[12])
+                print(23, self.beliefs_k[23], aaa[23])
+                print(26, self.beliefs_k[26], aaa[26])
                 
-
+                
                 # Invio dei marker geometrici per la visualizzazione grafica (Rviz)
                 tree_markers_msg = create_tree_markers(self.trees_pos, self.beliefs_k.full())
                 self.tree_markers_pub.publish(tree_markers_msg)

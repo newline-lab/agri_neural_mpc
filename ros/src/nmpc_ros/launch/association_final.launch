@@ -1,5 +1,5 @@
 <launch>
-  <node pkg="nmpc_ros" type="car_data_association_node_final.py" name="car_data_association_node_final" output="screen">
+  <node pkg="nmpc_ros" type="car_data_association_node_final2.py" name="car_data_association_node_final" output="screen">
     <param name="weights" type="string" value="/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/yolov7-ros/weights/yolov7.pt" />
     <param name="gps_source" type="string" value="topic" />
     <param name="gps_topic" type="string" value="/gps_data" />

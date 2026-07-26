@@ -540,6 +540,10 @@ class DataAssociationNode:
         self.car_width_m = rospy.get_param("~car_width_m", 1.8)
         # Quanti frame aspettare prima di dichiarare la persona "persa"
         self.person_patience = rospy.get_param("~person_patience", 30)
+        # Soglia di confidenza più alta per scartare i falsi positivi (sedili/riflessi)
+        self.person_conf_thresh = rospy.get_param("~person_conf_thresh", 0.60) 
+        # Tolleranza di profondità tra auto e persona per evitare di prendere chi ci cammina dietro
+        self.person_inside_depth_tol = rospy.get_param("~person_inside_depth_tol", 1.5)
 
         weights = rospy.get_param("~weights", '/home/andre/esperimento_parcheggio_ws/src/agri_neural_mpc/ros/src/yolov7-ros/weights/yolov7.pt')
         self.cont_thresh = rospy.get_param("~containment_thresh", 0.7)
@@ -810,19 +814,45 @@ class DataAssociationNode:
         best_car_box = None
         for car, car_depth, target, match_quality in best_by_id.values():
             best_person_conf = None
+            
+            # Controlla se la macchina è GIA' considerata occupata (score > 0)
+            is_currently_occupied = (self.scores[0, target.score_col] > 0)
+            
+            # Se è già occupata, abbassiamo la soglia a 0.40 per non "perderla" facilmente.
+            # Se invece è vuota (o incerta), manteniamo la soglia severa per evitare falsi positivi.
+            active_conf_thresh = 0.40 if is_currently_occupied else self.person_conf_thresh
+
             for p in persons:
+                pc = float(p[4])
+                
+                if pc < active_conf_thresh:
+                    continue
+
                 if containment_ratio(p[:4], car[:4]) >= self.cont_thresh:
-                    pc = float(p[4])
-                    if best_person_conf is None or pc > best_person_conf:
-                        best_person_conf = pc
+                    pz = get_box_median_depth(depth, *p[:4])
+                    
+                    depth_ok = False
+                    # 1. Se il sensore di profondità fallisce (es. riflesso sul vetro), pz sarà None.
+                    # In questo caso ci fidiamo dell'intersezione 2D (YOLO l'ha vista dentro l'auto).
+                    if pz is None:
+                        depth_ok = True
+                    # 2. Se abbiamo la profondità, verifichiamo che non stia camminando dietro l'auto
+                    elif abs(pz - car_depth) <= self.person_inside_depth_tol:
+                        depth_ok = True
+                        
+                    if depth_ok:
+                        if best_person_conf is None or pc > best_person_conf:
+                            best_person_conf = pc
 
             # --- LOGICA CONTATORE MEMORIA PERSONA ---
+            # Se la macchina era già considerata occupata, moltiplichiamo la pazienza x4 
+            # per resistere alle manovre lunghe in cui YOLO "perde" la persona.
+            active_patience = self.person_patience * 10 if is_currently_occupied else self.person_patience
+
             if best_person_conf is not None:
-                # Persona vista: ricarichiamo il contatore e salviamo la confidenza
-                target.person_grace_counter = self.person_patience
+                target.person_grace_counter = active_patience
                 target.last_person_conf = best_person_conf
             elif target.person_grace_counter > 0:
-                # Persona NON vista, ma abbiamo ancora memoria: riutilizziamo l'ultima nota
                 target.person_grace_counter -= 1
                 best_person_conf = target.last_person_conf
             # ----------------------------------------
@@ -854,7 +884,7 @@ class DataAssociationNode:
                     uncertain=uncertain)
                 score_now = self.scores[0, target.score_col]
 
-            if target.id == 12 or target.id == 26 or target.id == 23:
+            if target.id == 12 or target.id == 26 or target.id == 23 or target.id == 27:
                 rospy.loginfo(
                     "[Assoc] car %d (visitable=%r, driver_half=%r): score=%+.2f "
                     "(car=%.2f person=%s depth=%.2fm car_pos=(%.2f,%.2f) "
@@ -910,19 +940,27 @@ class DataAssociationNode:
 
             best_person_conf = None
             for p in persons:
+                pc = float(p[4])
+                # Applica la stessa soglia severa per evitare sedili "volanti"
+                if pc < self.person_conf_thresh:
+                    continue
+                    
                 pz = get_box_median_depth(depth, *p[:4])
                 if pz is None:
                     continue
                 if abs(pz - expected_dist) > self.person_depth_tolerance_m:
                     continue
-                pc = float(p[4])
+                
                 if best_person_conf is None or pc > best_person_conf:
                     best_person_conf = pc
 
                 
             # --- LOGICA CONTATORE MEMORIA PERSONA (FALLBACK) ---
+            is_currently_occupied = (self.scores[0, near_car.score_col] > 0)
+            active_patience = self.person_patience * 10 if is_currently_occupied else self.person_patience
+
             if best_person_conf is not None:
-                near_car.person_grace_counter = self.person_patience
+                near_car.person_grace_counter = active_patience
                 near_car.last_person_conf = best_person_conf
             elif near_car.person_grace_counter > 0:
                 near_car.person_grace_counter -= 1
